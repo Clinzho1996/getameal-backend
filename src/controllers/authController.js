@@ -1,7 +1,7 @@
 import OTP from "../models/OTP.js";
 import User from "../models/User.js";
 import { sendOTPEmail } from "../utils/emailService.js";
-import { generateOTP } from "../utils/generateOTP.js";
+import { generateOTP } from "../utils/generateOtp.js";
 import { generateToken } from "../utils/jwt.js";
 
 // Step 1: Signup Init
