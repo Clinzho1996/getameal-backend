@@ -1,3 +1,6 @@
+import Meal from "../models/Meal";
+import Order from "../models/Order";
+
 export const createOrder = async (userId, payload) => {
 	const meal = await Meal.findById(payload.mealId);
 
