@@ -11,14 +11,6 @@ cloudinary.v2.config({
 	api_secret: process.env.CLOUD_SECRET,
 });
 
-console.log(
-	"Cloud Name:",
-	process.env.CLOUD_NAME,
-	"Cloud Key:",
-	process.env.CLOUD_KEY,
-	"Cloud Secret:",
-	process.env.CLOUD_SECRET,
-);
 // Update basic profile info
 export const updateProfile = async (req, res) => {
 	try {

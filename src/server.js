@@ -21,8 +21,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// Debug
-console.log("RESEND_API_KEY:", process.env.RESEND_API_KEY);
+
 
 app.use(cors());
 app.use(express.json());
