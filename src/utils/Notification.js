@@ -1,13 +1,28 @@
 import admin from "firebase-admin";
-import fs from "fs";
-import path from "path";
 
-const serviceAccount = JSON.parse(
-	fs.readFileSync(path.resolve("src/config/serviceAccountKey.json"), "utf8"),
-);
+let serviceAccount;
+
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+	// This is the best way for Production (Render)
+	serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} else {
+	// This is for your local machine
+	try {
+		const fs = await import("fs");
+		const path = await import("path");
+		serviceAccount = JSON.parse(
+			fs.default.readFileSync(
+				path.default.resolve("src/config/serviceAccountKey.json"),
+				"utf8",
+			),
+		);
+	} catch (err) {
+		console.error("Failed to load Firebase service account key.");
+	}
+}
 
 // Initialize Firebase
-if (!admin.apps.length) {
+if (serviceAccount && !admin.apps.length) {
 	admin.initializeApp({
 		credential: admin.credential.cert(serviceAccount),
 	});
