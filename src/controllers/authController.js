@@ -64,13 +64,73 @@ export const signupComplete = async (req, res) => {
 	res.json({ token, user });
 };
 
+// Step 1: Login Init
+export const loginInit = async (req, res) => {
+	try {
+		const { email } = req.body;
+
+		const user = await User.findOne({ email });
+
+		if (!user) {
+			return res.status(404).json({
+				message: "User not found",
+			});
+		}
+
+		const code = generateOTP();
+
+		await OTP.create({
+			email,
+			code,
+			expiresAt: Date.now() + 10 * 60 * 1000,
+		});
+
+		await sendOTPEmail(email, code);
+
+		res.json({
+			message: "OTP sent",
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: error.message,
+		});
+	}
+};
+
 // Login using JWT
+// Step 2: Login Verify
 export const loginVerify = async (req, res) => {
-	const { email } = req.body;
+	try {
+		const { email, otp } = req.body;
 
-	const user = await User.findOne({ email });
-	if (!user) return res.status(404).json({ message: "User not found" });
+		const record = await OTP.findOne({
+			email,
+			code: otp,
+		});
 
-	const token = generateToken(user._id);
-	res.json({ token, user });
+		if (!record || record.expiresAt < Date.now()) {
+			return res.status(400).json({
+				message: "Invalid OTP",
+			});
+		}
+
+		const user = await User.findOne({ email });
+
+		if (!user) {
+			return res.status(404).json({
+				message: "User not found",
+			});
+		}
+
+		const token = generateToken(user._id);
+
+		res.json({
+			token,
+			user,
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: error.message,
+		});
+	}
 };

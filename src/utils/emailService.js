@@ -28,6 +28,7 @@ export const sendOTPEmail = async (email, code) => {
 	});
 
 	console.log("EMAIL SENT:", response);
+	console.log("EMAIL_FROM:", process.env.EMAIL_FROM);
 
 	return response;
 };

@@ -1,5 +1,6 @@
 import express from "express";
 import {
+	loginInit,
 	loginVerify,
 	signupComplete,
 	signupInit,
@@ -14,6 +15,7 @@ router.post("/signup/verify", signupVerify); // verify OTP
 router.post("/signup/complete", signupComplete); // create account
 
 // Login
-router.post("/login", loginVerify);
+router.post("/login/init", loginInit);
+router.post("/login/verify", loginVerify);
 
 export default router;
