@@ -67,3 +67,57 @@ export const updateCookProfile = async (req, res) => {
 		res.status(500).json({ message: error.message });
 	}
 };
+
+export const addFavoriteCook = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const { cookId } = req.params;
+
+		const user = await User.findById(userId);
+
+		if (!user.favorites.includes(cookId)) {
+			user.favorites.push(cookId);
+			await user.save();
+		}
+
+		res.json({ message: "Cook added to favorites" });
+	} catch (error) {
+		res.status(500).json({ message: "Failed to add favorite" });
+	}
+};
+
+export const removeFavoriteCook = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const { cookId } = req.params;
+
+		const user = await User.findById(userId);
+
+		user.favorites = user.favorites.filter((id) => id.toString() !== cookId);
+
+		await user.save();
+
+		res.json({ message: "Cook removed from favorites" });
+	} catch (error) {
+		res.status(500).json({ message: "Failed to remove favorite" });
+	}
+};
+
+export const getFavoriteCooks = async (req, res) => {
+	try {
+		const userId = req.user.id;
+
+		const user = await User.findById(userId).populate({
+			path: "favorites",
+			select: "name email profileImage rating role",
+		});
+
+		if (!user) {
+			return res.status(404).json({ message: "User not found" });
+		}
+
+		res.json(user.favorites);
+	} catch (error) {
+		res.status(500).json({ message: "Failed to fetch favorites" });
+	}
+};

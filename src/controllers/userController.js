@@ -1,5 +1,6 @@
 import cloudinary from "cloudinary";
 import dotenv from "dotenv";
+import Cart from "../models/Cart.js";
 import Meal from "../models/Meal.js";
 import User from "../models/User.js";
 dotenv.config();
@@ -155,5 +156,30 @@ export const getUserProfile = async (req, res) => {
 		res.status(500).json({
 			message: error.message,
 		});
+	}
+};
+
+export const getMyCart = async (req, res) => {
+	try {
+		const userId = req.user.id;
+
+		const cart = await Cart.findOne({ user: userId }).populate("items.meal");
+
+		if (!cart) {
+			return res.json({ items: [], total: 0 });
+		}
+
+		// Calculate total securely on server
+		const total = cart.items.reduce(
+			(sum, item) => sum + item.price * item.quantity,
+			0,
+		);
+
+		res.json({
+			items: cart.items,
+			total,
+		});
+	} catch (error) {
+		res.status(500).json({ message: "Failed to fetch cart" });
 	}
 };

@@ -23,6 +23,12 @@ const userSchema = new mongoose.Schema(
 		availableForCooking: { type: Date },
 		cookSince: { type: Date },
 		pickupAvailable: { type: Boolean, default: true },
+		favorites: [
+			{
+				type: mongoose.Schema.Types.ObjectId,
+				ref: "User",
+			},
+		],
 		payoutBank: {
 			accountNumber: String,
 			bankName: String,
