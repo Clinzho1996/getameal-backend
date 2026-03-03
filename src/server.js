@@ -8,8 +8,10 @@ import morgan from "morgan";
 import { Server } from "socket.io";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
+import bankRoutes from "./routes/bankRoutes.js";
 import cookRoutes from "./routes/cookRoutes.js";
 import foodCategoryRoutes from "./routes/foodCategoryRoutes.js";
+import locationRoutes from "./routes/locationRoutes.js";
 import mealRoutes from "./routes/mealRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
@@ -20,8 +22,6 @@ connectDB();
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
-
-
 
 app.use(cors());
 app.use(express.json());
@@ -35,6 +35,8 @@ app.use("/api/user", userRoutes);
 app.use("/api/cook", cookRoutes);
 app.use("/api/category", foodCategoryRoutes);
 app.use("/api/reviews", reviewRoutes);
+app.use("/api/banks", bankRoutes);
+app.use("/api/locations", locationRoutes);
 
 // Socket.io
 io.on("connection", (socket) => {

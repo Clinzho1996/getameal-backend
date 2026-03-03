@@ -57,3 +57,36 @@ export const paystackWebhook = async (req, res) => {
 
 	res.sendStatus(200);
 };
+
+export const paymentWebhook = async (req, res) => {
+	const { orderId, amount } = req.body;
+
+	const order = await Order.findById(orderId).populate("cook");
+
+	if (!order) return res.sendStatus(404);
+
+	if (order.paymentStatus === "paid") return res.sendStatus(200);
+
+	order.paymentStatus = "paid";
+	await order.save();
+
+	// Commission example 10%
+
+	const commission = amount * 0.1;
+
+	const cookAmount = amount - commission;
+
+	// Credit cook wallet
+
+	await Wallet.findOneAndUpdate(
+		{ user: order.cook._id },
+		{
+			$inc: {
+				balance: cookAmount,
+			},
+		},
+		{ upsert: true },
+	);
+
+	res.sendStatus(200);
+};
