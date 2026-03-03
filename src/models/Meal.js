@@ -9,6 +9,7 @@ const mealSchema = new mongoose.Schema(
 		price: Number,
 		quantityLabel: String,
 		portionsTotal: Number,
+		unitsPerQuantity: Number,
 		portionsRemaining: Number,
 		cookingDate: Date,
 		pickupWindow: {

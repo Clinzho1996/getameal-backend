@@ -39,6 +39,7 @@ export const createMeal = async (req, res) => {
 			category: req.body.category,
 			name: req.body.name,
 			description: req.body.description,
+			unitsPerQuantity: req.body.unitsPerQuantity,
 			price: req.body.price,
 			quantityLabel: req.body.quantityLabel,
 			portionsTotal: req.body.portionsTotal,
@@ -70,16 +71,16 @@ export const getMeals = async (req, res) => {
 
 // Get all meals by cook ID
 export const getMealsByCook = async (req, res) => {
-  try {
-    const cook = await User.findById(req.params.cookId);
-    if (!cook || cook.role !== "cook")
-      return res.status(404).json({ message: "Cook not found" });
+	try {
+		const cook = await User.findById(req.params.cookId);
+		if (!cook || cook.role !== "cook")
+			return res.status(404).json({ message: "Cook not found" });
 
-    const meals = await Meal.find({ cookId: cook._id }).sort({ createdAt: -1 });
-    res.json(meals);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+		const meals = await Meal.find({ cookId: cook._id }).sort({ createdAt: -1 });
+		res.json(meals);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
 };
 
 // Get single meal by ID
