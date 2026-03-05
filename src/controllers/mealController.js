@@ -62,7 +62,10 @@ export const getMeals = async (req, res) => {
 	try {
 		const meals = await Meal.find()
 			.populate("cookId", "fullName profileImage")
-			.sort({ createdAt: -1 });
+			.sort({ createdAt: -1 })
+			.select(
+				"name description price unitsPerQuantity images portionsRemaining category cookingDate pickupWindow deliveryRegions quantityLabel",
+			);
 		res.json(meals);
 	} catch (error) {
 		res.status(500).json({ message: error.message });
@@ -182,6 +185,7 @@ export const searchMeals = async (req, res) => {
 					name: 1,
 					description: 1,
 					price: 1,
+					unitsPerQuantity: 1,
 					images: 1,
 					portionsRemaining: 1,
 					"categoryInfo._id": 1,
