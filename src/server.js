@@ -9,6 +9,7 @@ import { Server } from "socket.io";
 import connectDB from "./config/db.js";
 import authRoutes from "./routes/authRoutes.js";
 import bankRoutes from "./routes/bankRoutes.js";
+import callRoutes from "./routes/callRoutes.js";
 import cookRoutes from "./routes/cookRoutes.js";
 import foodCategoryRoutes from "./routes/foodCategoryRoutes.js";
 import locationRoutes from "./routes/locationRoutes.js";
@@ -41,6 +42,7 @@ app.use("/api/banks", bankRoutes);
 app.use("/api/locations", locationRoutes);
 app.use("/api/webhooks", webhookRoutes);
 app.use("/api/payouts", payoutRoutes);
+app.use("/api/calls", callRoutes);
 
 // Socket.io
 io.on("connection", (socket) => {
