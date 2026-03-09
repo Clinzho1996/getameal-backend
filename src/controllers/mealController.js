@@ -205,3 +205,38 @@ export const searchMeals = async (req, res) => {
 		res.status(500).json({ message: error.message });
 	}
 };
+
+export const getRelatedMeals = async (req, res) => {
+	try {
+		const { id } = req.params;
+
+		const meal = await Meal.findById(id);
+
+		if (!meal) {
+			return res.status(404).json({
+				message: "Meal not found",
+			});
+		}
+
+		const relatedMeals = await Meal.find({
+			_id: { $ne: meal._id },
+			status: "open",
+			$or: [{ category: meal.category }, { cookId: meal.cookId }],
+		})
+			.populate("cookId", "fullName profileImage")
+			.select(
+				"name description price unitsPerQuantity images portionsRemaining category cookingDate quantityLabel",
+			)
+			.limit(6)
+			.sort({ createdAt: -1 });
+
+		res.json({
+			currentMeal: meal._id,
+			relatedMeals,
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: error.message,
+		});
+	}
+};

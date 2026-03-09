@@ -29,11 +29,6 @@ const userSchema = new mongoose.Schema(
 				ref: "User",
 			},
 		],
-		payoutBank: {
-			accountNumber: String,
-			bankName: String,
-			bankCode: String,
-		},
 	},
 	{ timestamps: true },
 );

@@ -4,9 +4,10 @@ import {
 	deleteMeal,
 	getMealById,
 	getMeals,
+	getMealsByCook,
+	getRelatedMeals,
 	searchMeals,
 	updateMeal,
-    getMealsByCook,
 } from "../controllers/mealController.js";
 import protect from "../middleware/auth.js";
 import { upload } from "../middleware/upload.js";
@@ -20,6 +21,7 @@ router.get("/search", searchMeals);
 router.get("/:id", getMealById);
 // Get meals by cook ID
 router.get("/cook/:cookId", getMealsByCook);
+router.get("/:id/related", protect, getRelatedMeals);
 router.patch("/:id", protect, upload.array("images", 5), updateMeal);
 router.delete("/:id", protect, deleteMeal);
 

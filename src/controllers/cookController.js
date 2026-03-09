@@ -1,13 +1,28 @@
 // controllers/cookController.js
+import CookProfile from "../models/CookProfile.js";
 import User from "../models/User.js";
 
 // Get single cook by ID
 export const getCookById = async (req, res) => {
 	try {
-		const cook = await User.findOne({ _id: req.params.id, role: "cook" });
-		if (!cook) return res.status(404).json({ message: "Cook not found" });
+		const cook = await User.findOne({
+			_id: req.params.id,
+			role: "cook",
+		});
 
-		res.json(cook);
+		if (!cook) {
+			return res.status(404).json({ message: "Cook not found" });
+		}
+
+		const cookProfile = await CookProfile.findOne({
+			userId: cook._id,
+		});
+
+		res.json({
+			...cook.toObject(),
+			cookProfile,
+			bankDetails: cookProfile?.bankDetails || null,
+		});
 	} catch (error) {
 		res.status(500).json({ message: error.message });
 	}
@@ -19,7 +34,28 @@ export const getAllCooks = async (req, res) => {
 		const cooks = await User.find({ role: "cook" }).select(
 			"_id fullName profileImage cookAddress cookingExperience availableForCooking",
 		);
-		res.json(cooks);
+
+		const cookIds = cooks.map((c) => c._id);
+
+		const cookProfiles = await CookProfile.find({
+			userId: { $in: cookIds },
+		});
+
+		const merged = cooks.map((cook) => {
+			const profile = cookProfiles.find(
+				(p) => p.userId.toString() === cook._id.toString(),
+			);
+
+			return {
+				...cook.toObject(),
+				rating: profile?.rating || 0,
+				ordersCount: profile?.ordersCount || 0,
+				bankDetails: profile?.bankDetails || null,
+				isApproved: profile?.isApproved || false,
+			};
+		});
+
+		res.json(merged);
 	} catch (error) {
 		res.status(500).json({ message: error.message });
 	}
@@ -27,24 +63,71 @@ export const getAllCooks = async (req, res) => {
 // Become a cook
 export const becomeCook = async (req, res) => {
 	try {
-		const { cookAddress, cookingExperience, availableForCooking, payoutBank } =
-			req.body;
+		const {
+			cookName,
+			phone,
+			address,
+			experience,
+			startImmediately,
+			availableDate,
+		} = req.body;
 
-		const user = await User.findById(req.user.id);
-		if (!user) return res.status(404).json({ message: "User not found" });
+		const userId = req.user.id;
 
+		if (!cookName || !phone || !address || !experience) {
+			return res.status(400).json({
+				message: "Cook name, phone, address and experience are required",
+			});
+		}
+
+		const user = await User.findById(userId);
+
+		if (!user) {
+			return res.status(404).json({
+				message: "User not found",
+			});
+		}
+
+		// Check if already applied
+		const existingCook = await CookProfile.findOne({ userId });
+
+		if (existingCook) {
+			return res.status(400).json({
+				message: "You have already applied to become a cook",
+			});
+		}
+
+		const cookProfile = await CookProfile.create({
+			userId,
+			availablePickup: true,
+			schedule: startImmediately
+				? ["Immediate"]
+				: availableDate
+					? [availableDate]
+					: [],
+			isApproved: false,
+		});
+
+		// Update user basic cook info
 		user.role = "cook";
-		user.cookAddress = cookAddress;
-		user.cookingExperience = cookingExperience;
-		user.availableForCooking = availableForCooking;
-		user.cookSince = new Date();
-		user.payoutBank = payoutBank;
+		user.fullName = cookName;
+		user.phone = phone;
+		user.cookAddress = address;
+		user.cookingExperience = experience;
+		user.availableForCooking = startImmediately ? new Date() : availableDate;
 
 		await user.save();
 
-		res.json({ message: "You are now a cook", user });
+		res.status(201).json({
+			message: "Application submitted. Awaiting admin approval.",
+			status: "pending_approval",
+			cookProfile,
+		});
 	} catch (error) {
-		res.status(500).json({ message: error.message });
+		res.status(500).json({
+			message: "Failed to submit cook application",
+			error: error.message,
+		});
 	}
 };
 

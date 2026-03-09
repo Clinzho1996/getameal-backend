@@ -1,5 +1,10 @@
 import express from "express";
 import {
+	addCookBankAccount,
+	deleteCookBankAccount,
+	updateCookBankAccount,
+} from "../controllers/bankController.js";
+import {
 	becomeCook,
 	getAllCooks,
 	getCookById,
@@ -11,6 +16,9 @@ const router = express.Router();
 
 // Become a cook
 router.post("/become", protect, becomeCook);
+router.post("/bank", protect, addCookBankAccount);
+router.put("/bank", protect, updateCookBankAccount);
+router.delete("/bank", protect, deleteCookBankAccount);
 
 // Update cook profile
 router.patch("/update", protect, updateCookProfile);

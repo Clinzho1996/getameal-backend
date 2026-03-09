@@ -1,4 +1,5 @@
 import axios from "axios";
+import CookProfile from "../models/CookProfile.js";
 
 export const getBanks = async (req, res) => {
 	try {
@@ -33,6 +34,135 @@ export const verifyAccount = async (req, res) => {
 	} catch (error) {
 		res.status(400).json({
 			message: "Invalid account",
+		});
+	}
+};
+
+export const addCookBankAccount = async (req, res) => {
+	try {
+		const { accountNumber, bankCode, bankName } = req.body;
+		const userId = req.user.id;
+
+		if (!accountNumber || !bankCode) {
+			return res.status(400).json({
+				message: "Account number and bank code are required",
+			});
+		}
+
+		const cook = await CookProfile.findOne({ userId });
+
+		if (!cook) {
+			return res.status(404).json({
+				message: "Cook profile not found",
+			});
+		}
+
+		if (cook.bankDetails?.accountNumber) {
+			return res.status(400).json({
+				message: "Bank account already exists. Use update instead.",
+			});
+		}
+
+		const response = await axios.get(
+			`https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
+			{
+				headers: {
+					Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+				},
+			},
+		);
+
+		const { account_name } = response.data.data;
+
+		cook.bankDetails = {
+			accountNumber,
+			bankCode,
+			bankName,
+			accountName: account_name,
+		};
+
+		await cook.save();
+
+		res.status(201).json({
+			message: "Bank account added successfully",
+			bankDetails: cook.bankDetails,
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: "Failed to add bank account",
+			error: error.message,
+		});
+	}
+};
+
+export const updateCookBankAccount = async (req, res) => {
+	try {
+		const { accountNumber, bankCode, bankName } = req.body;
+		const userId = req.user.id;
+
+		const cook = await CookProfile.findOne({ userId });
+
+		if (!cook) {
+			return res.status(404).json({
+				message: "Cook profile not found",
+			});
+		}
+
+		const response = await axios.get(
+			`https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
+			{
+				headers: {
+					Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+				},
+			},
+		);
+
+		const { account_name } = response.data.data;
+
+		cook.bankDetails = {
+			accountNumber,
+			bankCode,
+			bankName,
+			accountName: account_name,
+		};
+
+		await cook.save();
+
+		res.json({
+			message: "Bank account updated successfully",
+			bankDetails: cook.bankDetails,
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: "Failed to update bank account",
+			error: error.message,
+		});
+	}
+};
+
+export const deleteCookBankAccount = async (req, res) => {
+	try {
+		const userId = req.user.id;
+
+		const cook = await CookProfile.findOne({ userId });
+
+		if (!cook) {
+			return res.status(404).json({
+				message: "Cook profile not found",
+			});
+		}
+
+		cook.bankDetails = undefined;
+
+		await cook.save();
+
+		res.json({
+			message: "Bank account removed successfully",
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: "Failed to delete bank account",
+			error: error.message,
 		});
 	}
 };
