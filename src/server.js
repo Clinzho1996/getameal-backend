@@ -14,6 +14,7 @@ import foodCategoryRoutes from "./routes/foodCategoryRoutes.js";
 import locationRoutes from "./routes/locationRoutes.js";
 import mealRoutes from "./routes/mealRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
+import payoutRoutes from "./routes/payoutRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import webhookRoutes from "./routes/webhooks.js";
@@ -39,6 +40,7 @@ app.use("/api/reviews", reviewRoutes);
 app.use("/api/banks", bankRoutes);
 app.use("/api/locations", locationRoutes);
 app.use("/api/webhooks", webhookRoutes);
+app.use("/api/payouts", payoutRoutes);
 
 // Socket.io
 io.on("connection", (socket) => {
