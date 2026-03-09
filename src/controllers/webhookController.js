@@ -10,49 +10,48 @@ export const paystackWebhook = async (req, res) => {
 		.update(JSON.stringify(req.body))
 		.digest("hex");
 
-	if (hash !== req.headers["x-paystack-signature"]) return res.sendStatus(401);
+	if (hash !== req.headers["x-paystack-signature"]) {
+		return res.sendStatus(401);
+	}
 
 	const event = req.body;
 
 	if (event.event === "charge.success") {
-		const order = await Order.findById(event.data.reference);
+		const reference = event.data.reference;
+
+		const order = await Order.findOne({
+			paymentReference: reference,
+		});
+
+		if (!order || order.paymentStatus === "paid") {
+			return res.sendStatus(200);
+		}
 
 		order.paymentStatus = "paid";
 		order.status = "confirmed";
+
 		await order.save();
 
 		const cook = await User.findById(order.cookId);
-		cook.walletBalance += order.totalAmount;
+
+		const commissionRate = 0.1;
+		const commission = order.totalAmount * commissionRate;
+		const cookAmount = order.totalAmount - commission;
+
+		cook.walletBalance += cookAmount;
+
 		await cook.save();
 
 		await WalletTransaction.create({
 			cookId: cook._id,
 			type: "credit",
-			amount: order.totalAmount,
-			reference: order._id,
+			amount: cookAmount,
+			reference: order._id.toString(),
 		});
 
 		const io = getIO();
+
 		io.to(`user_${order.userId}`).emit("order_update", order);
-	}
-
-	if (event.event === "refund.processed") {
-		const order = await Order.findOne({
-			paymentReference: event.data.transaction_reference,
-		});
-
-		order.paymentStatus = "refunded";
-		await order.save();
-
-		const cook = await User.findById(order.cookId);
-		cook.walletBalance -= order.totalAmount;
-		await cook.save();
-
-		await WalletTransaction.create({
-			cookId: cook._id,
-			type: "debit",
-			amount: order.totalAmount,
-		});
 	}
 
 	res.sendStatus(200);

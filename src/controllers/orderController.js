@@ -8,21 +8,32 @@ import { sendOTPEmail } from "../utils/emailService.js";
 import { emitOrderUpdate, sendNotification } from "../utils/Notification.js";
 
 // Create a new order (transaction safe)
+import crypto from "crypto";
+
 export const createOrder = async (req, res) => {
 	const session = await mongoose.startSession();
 	session.startTransaction();
 
 	try {
-		const { mealId, quantity, deliveryType } = req.body;
+		const { mealId, quantity, deliveryType, paymentType, note } = req.body;
 
 		const meal = await Meal.findById(mealId).session(session);
+
 		if (!meal || meal.portionsRemaining < quantity)
 			throw new Error("Not enough portions available");
 
 		meal.portionsRemaining -= quantity;
-		await meal.save();
+		await meal.save({ session });
 
 		const total = meal.price * quantity;
+
+		let paymentLinkCode = null;
+
+		// generate friend payment code
+		if (paymentType === "friend") {
+			paymentLinkCode =
+				"GATH-" + crypto.randomBytes(3).toString("hex").toUpperCase();
+		}
 
 		const order = await Order.create(
 			[
@@ -32,24 +43,64 @@ export const createOrder = async (req, res) => {
 					mealItems: [{ mealId, quantity, price: meal.price }],
 					totalAmount: total,
 					deliveryType,
+					note,
+					paymentType,
 					paymentReference: new mongoose.Types.ObjectId().toString(),
+					paymentLinkCode,
 				},
 			],
 			{ session },
 		);
 
-		await session.commitTransaction();
-		session.endSession();
+		const createdOrder = order[0];
 
-		res.json(order[0]);
+		// If user pays immediately
+		if (paymentType === "self") {
+			const paystack = await axios.post(
+				"https://api.paystack.co/transaction/initialize",
+				{
+					email: req.user.email,
+					amount: total * 100,
+					reference: createdOrder.paymentReference,
+					callback_url: "getameal://payment-success",
+					metadata: {
+						orderId: createdOrder._id,
+					},
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+					},
+				},
+			);
+
+			await session.commitTransaction();
+			session.endSession();
+
+			return res.json({
+				order: createdOrder,
+				paymentUrl: paystack.data.data.authorization_url,
+			});
+		}
+
+		// If friend pays
+		if (paymentType === "friend") {
+			await session.commitTransaction();
+			session.endSession();
+
+			return res.json({
+				order: createdOrder,
+				paymentLink: `${process.env.API_URL}/pay/${paymentLinkCode}`,
+			});
+		}
 	} catch (error) {
 		await session.abortTransaction();
 		session.endSession();
+
 		res.status(400).json({ message: error.message });
 	}
 };
 
-// Update order (Owner or Cook)
 // Update order (Owner or Cook)
 export const updateOrder = async (req, res) => {
 	try {

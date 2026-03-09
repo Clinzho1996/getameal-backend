@@ -5,18 +5,19 @@ import WalletTransaction from "../models/WalletTransaction.js";
 
 // Handle successful payment
 export const handleSuccessfulPayment = async (data) => {
-	const order = await Order.findById(data.reference);
-	if (!order) throw new Error("Order not found");
+	const order = await Order.findOne({
+		paymentReference: data.reference,
+	});
 
-	if (order.paymentStatus === "paid") return; // already processed
+	if (!order || order.paymentStatus === "paid") return;
 
 	order.paymentStatus = "paid";
 	order.status = "confirmed";
 	await order.save();
 
-	// CREDIT COOK WALLET AND DEDUCT COMMISSION
 	const cook = await User.findById(order.cookId);
-	const commissionRate = 0.1; // 10%
+
+	const commissionRate = 0.1;
 	const commission = order.totalAmount * commissionRate;
 	const cookAmount = order.totalAmount - commission;
 
