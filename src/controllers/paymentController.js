@@ -1,18 +1,59 @@
-import { paystack } from "../config/paystack.js";
+// controllers/paymentController.js
 import Order from "../models/Order.js";
+import User from "../models/User.js";
+import WalletTransaction from "../models/WalletTransaction.js";
 
-export const refundOrder = async (req, res) => {
-	const order = await Order.findById(req.params.id);
+// Handle successful payment
+export const handleSuccessfulPayment = async (data) => {
+	const order = await Order.findById(data.reference);
+	if (!order) throw new Error("Order not found");
 
-	if (order.paymentStatus !== "paid")
-		return res.status(400).json({ message: "Not refundable" });
+	if (order.paymentStatus === "paid") return; // already processed
 
-	await paystack.post("/refund", {
-		transaction: order.paymentReference,
+	order.paymentStatus = "paid";
+	order.status = "confirmed";
+	await order.save();
+
+	// CREDIT COOK WALLET AND DEDUCT COMMISSION
+	const cook = await User.findById(order.cookId);
+	const commissionRate = 0.1; // 10%
+	const commission = order.totalAmount * commissionRate;
+	const cookAmount = order.totalAmount - commission;
+
+	cook.walletBalance += cookAmount;
+	await cook.save();
+
+	await WalletTransaction.create({
+		cookId: cook._id,
+		type: "credit",
+		amount: cookAmount,
+		reference: order._id.toString(),
 	});
 
+	console.log(`Cook ${cook._id} credited: ${cookAmount}`);
+};
+
+// Handle refund
+export const handleRefund = async (data) => {
+	const order = await Order.findOne({
+		paymentReference: data.transaction_reference,
+	});
+	if (!order) throw new Error("Order not found");
+
+	order.paymentStatus = "refunded";
 	order.status = "cancelled";
 	await order.save();
 
-	res.json({ message: "Refund initiated" });
+	const cook = await User.findById(order.cookId);
+	cook.walletBalance -= order.totalAmount;
+	await cook.save();
+
+	await WalletTransaction.create({
+		cookId: cook._id,
+		type: "debit",
+		amount: order.totalAmount,
+		reference: order._id.toString(),
+	});
+
+	console.log(`Cook ${cook._id} debited: ${order.totalAmount}`);
 };

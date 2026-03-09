@@ -16,6 +16,7 @@ import mealRoutes from "./routes/mealRoutes.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
+import webhookRoutes from "./routes/webhooks.js";
 
 connectDB();
 
@@ -37,6 +38,7 @@ app.use("/api/category", foodCategoryRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/banks", bankRoutes);
 app.use("/api/locations", locationRoutes);
+app.use("/api/webhooks", webhookRoutes);
 
 // Socket.io
 io.on("connection", (socket) => {

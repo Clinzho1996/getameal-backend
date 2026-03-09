@@ -2,6 +2,8 @@ import axios from "axios";
 import mongoose from "mongoose";
 import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
+import User from "../models/User.js";
+import WalletTransaction from "../models/WalletTransaction.js";
 import { sendOTPEmail } from "../utils/emailService.js";
 import { emitOrderUpdate, sendNotification } from "../utils/Notification.js";
 
@@ -30,6 +32,7 @@ export const createOrder = async (req, res) => {
 					mealItems: [{ mealId, quantity, price: meal.price }],
 					totalAmount: total,
 					deliveryType,
+					paymentReference: new mongoose.Types.ObjectId().toString(),
 				},
 			],
 			{ session },
@@ -215,51 +218,51 @@ export const sendDeliveryOTP = async (req, res) => {
 export const verifyDeliveryOTP = async (req, res) => {
 	try {
 		const { otp } = req.body;
-
 		const order = await Order.findById(req.params.id);
 
-		if (!order)
-			return res.status(404).json({
-				message: "Order not found",
-			});
-
+		if (!order) return res.status(404).json({ message: "Order not found" });
 		if (!order.otpCode)
-			return res.status(400).json({
-				message: "No OTP requested",
-			});
-
+			return res.status(400).json({ message: "No OTP requested" });
 		if (order.otpExpires < Date.now())
-			return res.status(400).json({
-				message: "OTP expired",
-			});
-
+			return res.status(400).json({ message: "OTP expired" });
 		if (order.otpCode !== otp)
-			return res.status(400).json({
-				message: "Invalid OTP",
-			});
+			return res.status(400).json({ message: "Invalid OTP" });
 
-		// Complete order
-
+		// Mark order as completed
 		if (order.deliveryType === "delivery") {
 			order.status = "delivered";
-		}
-
-		if (order.deliveryType === "pickup") {
+		} else if (order.deliveryType === "pickup") {
 			order.status = "picked_up";
 		}
 
 		order.otpCode = null;
 		order.otpExpires = null;
-
 		await order.save();
+
+		// ---- CREDIT COOK WALLET AND DEDUCT COMMISSION ----
+		const cook = await User.findById(order.cookId);
+
+		const commissionRate = 0.1; // 10% commission
+		const commission = order.totalAmount * commissionRate;
+		const cookAmount = order.totalAmount - commission;
+
+		cook.walletBalance += cookAmount;
+		await cook.save();
+
+		// Log transaction
+		await WalletTransaction.create({
+			cookId: cook._id,
+			type: "credit",
+			amount: cookAmount,
+			reference: order._id.toString(),
+		});
 
 		res.json({
 			message: "Order completed successfully",
 			order,
+			cookWalletBalance: cook.walletBalance,
 		});
 	} catch (error) {
-		res.status(500).json({
-			message: error.message,
-		});
+		res.status(500).json({ message: error.message });
 	}
 };

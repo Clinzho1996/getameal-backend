@@ -3,3 +3,4 @@
 .env.local
 serviceAccountKey.json
 node_modules
+simulatePaystackWebhook.js
