@@ -18,8 +18,9 @@ export const getCookById = async (req, res) => {
 			userId: cook._id,
 		});
 
+		const { payoutBank, ...userData } = cook.toObject();
 		res.json({
-			...cook.toObject(),
+			...userData,
 			cookProfile,
 			bankDetails: cookProfile?.bankDetails || null,
 		});
