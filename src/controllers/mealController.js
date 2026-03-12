@@ -16,20 +16,17 @@ cloudinary.v2.config({
 // Create Meal (Cook Only) with file upload
 export const createMeal = async (req, res) => {
 	try {
-		if (req.user.role !== "cook") {
+		if (!(req.user.role === "cook" || req.user.isCook)) {
 			return res.status(403).json({ message: "Only cooks can create meals" });
 		}
 
 		let images = [];
 		if (req.files && req.files.length > 0) {
-			// Upload each image to Cloudinary
 			for (const file of req.files) {
 				const result = await cloudinary.v2.uploader.upload(file.path, {
 					folder: "getameal/meals",
 				});
 				images.push({ url: result.secure_url, publicId: result.public_id });
-
-				// Remove file from server
 				fs.unlinkSync(file.path);
 			}
 		}
@@ -47,7 +44,7 @@ export const createMeal = async (req, res) => {
 			cookingDate: req.body.cookingDate,
 			pickupWindow: req.body.pickupWindow,
 			deliveryRegions: req.body.deliveryRegions,
-			images, // store Cloudinary URLs
+			images,
 		});
 
 		await meal.save();
@@ -75,11 +72,19 @@ export const getMeals = async (req, res) => {
 // Get all meals by cook ID
 export const getMealsByCook = async (req, res) => {
 	try {
-		const cook = await User.findById(req.params.cookId);
-		if (!cook || cook.role !== "cook")
-			return res.status(404).json({ message: "Cook not found" });
+		const cookId = req.params.cookId;
 
-		const meals = await Meal.find({ cookId: cook._id }).sort({ createdAt: -1 });
+		const cook = await User.findOne({
+			_id: cookId,
+			$or: [{ role: "cook" }, { isCook: true }],
+		});
+
+		if (!cook) return res.status(404).json({ message: "Cook not found" });
+
+		const meals = await Meal.find({ cookId: cook._id })
+			.sort({ createdAt: -1 })
+			.populate("cookId", "fullName profileImage location");
+
 		res.json(meals);
 	} catch (error) {
 		res.status(500).json({ message: error.message });
@@ -91,7 +96,7 @@ export const getMealById = async (req, res) => {
 	try {
 		const meal = await Meal.findById(req.params.id).populate(
 			"cookId",
-			"fullName profileImage",
+			"fullName profileImage location",
 		);
 		if (!meal) return res.status(404).json({ message: "Meal not found" });
 		res.json(meal);
@@ -106,13 +111,14 @@ export const updateMeal = async (req, res) => {
 		const meal = await Meal.findById(req.params.id);
 		if (!meal) return res.status(404).json({ message: "Meal not found" });
 
-		if (meal.cookId.toString() !== req.user._id.toString())
+		if (meal.cookId.toString() !== req.user._id.toString()) {
 			return res
 				.status(403)
 				.json({ message: "Not authorized to update this meal" });
+		}
 
 		Object.assign(meal, req.body);
-		// Ensure portionsRemaining isn't higher than portionsTotal
+
 		if (
 			req.body.portionsTotal &&
 			req.body.portionsTotal < meal.portionsRemaining
@@ -133,10 +139,11 @@ export const deleteMeal = async (req, res) => {
 		const meal = await Meal.findById(req.params.id);
 		if (!meal) return res.status(404).json({ message: "Meal not found" });
 
-		if (meal.cookId.toString() !== req.user._id.toString())
+		if (meal.cookId.toString() !== req.user._id.toString()) {
 			return res
 				.status(403)
 				.json({ message: "Not authorized to delete this meal" });
+		}
 
 		await meal.deleteOne();
 		res.json({ message: "Meal deleted successfully" });
@@ -145,17 +152,16 @@ export const deleteMeal = async (req, res) => {
 	}
 };
 
+// Search meals
 export const searchMeals = async (req, res) => {
 	try {
 		const { query } = req.query;
-
 		if (!query) return res.status(400).json({ message: "Query is required" });
 
-		// Aggregate to search across meal name, category name, and cook fullName
 		const meals = await Meal.aggregate([
 			{
 				$lookup: {
-					from: "foodcategories", // MongoDB collection name for FoodCategory
+					from: "foodcategories",
 					localField: "category",
 					foreignField: "_id",
 					as: "categoryInfo",
@@ -164,7 +170,7 @@ export const searchMeals = async (req, res) => {
 			{ $unwind: { path: "$categoryInfo", preserveNullAndEmptyArrays: true } },
 			{
 				$lookup: {
-					from: "users", // MongoDB collection name for User
+					from: "users",
 					localField: "cookId",
 					foreignField: "_id",
 					as: "cookInfo",
@@ -201,22 +207,16 @@ export const searchMeals = async (req, res) => {
 
 		res.json(meals);
 	} catch (error) {
-		console.error(error);
 		res.status(500).json({ message: error.message });
 	}
 };
 
+// Get related meals
 export const getRelatedMeals = async (req, res) => {
 	try {
 		const { id } = req.params;
-
 		const meal = await Meal.findById(id);
-
-		if (!meal) {
-			return res.status(404).json({
-				message: "Meal not found",
-			});
-		}
+		if (!meal) return res.status(404).json({ message: "Meal not found" });
 
 		const relatedMeals = await Meal.find({
 			_id: { $ne: meal._id },
@@ -230,13 +230,8 @@ export const getRelatedMeals = async (req, res) => {
 			.limit(6)
 			.sort({ createdAt: -1 });
 
-		res.json({
-			currentMeal: meal._id,
-			relatedMeals,
-		});
+		res.json({ currentMeal: meal._id, relatedMeals });
 	} catch (error) {
-		res.status(500).json({
-			message: error.message,
-		});
+		res.status(500).json({ message: error.message });
 	}
 };
