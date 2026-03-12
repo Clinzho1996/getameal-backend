@@ -176,41 +176,26 @@ export const loginInit = async (req, res) => {
 };
 
 // STEP 2: Login Verify
+
 export const loginVerify = async (req, res) => {
 	try {
 		const { email, otp } = req.body;
 
-		if (!email || !otp) {
-			return res.status(400).json({
-				message: "Email and OTP are required",
-			});
-		}
-
-		const record = await OTP.findOne({
-			email,
-			code: otp,
-		});
+		const record = await OTP.findOne({ email, code: otp });
 
 		if (!record) {
-			return res.status(400).json({
-				message: "Incorrect OTP",
-			});
+			return res.status(400).json({ message: "Incorrect OTP" });
 		}
 
 		if (record.expiresAt < Date.now()) {
-			return res.status(400).json({
-				message: "OTP expired",
-			});
+			return res.status(400).json({ message: "OTP expired" });
 		}
 
 		const user = await User.findOne({ email });
-		const cookProfile = await CookProfile.findOne({ userId: user._id });
 
-		if (!user) {
-			return res.status(404).json({
-				message: "User not registered",
-			});
-		}
+		const cookProfile = await CookProfile.findOne({
+			userId: user._id,
+		});
 
 		const token = generateToken(user._id);
 

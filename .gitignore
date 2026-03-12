@@ -4,3 +4,5 @@
 serviceAccountKey.json
 node_modules
 simulatePaystackWebhook.js
+fixCookUsers.js
+fixCookLocation.js

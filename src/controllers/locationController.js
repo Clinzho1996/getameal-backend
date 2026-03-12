@@ -126,11 +126,16 @@ export const getNearbyCooks = async (req, res) => {
 			});
 		}
 
-		// radius in meters (default 5km)
 		const searchRadius = radius ? parseInt(radius) : 5000;
 
+		console.log(
+			`Searching for cooks near [${latitude}, ${longitude}] within ${searchRadius} meters`,
+		);
+
+		// Query cooks with geocoded locations
 		const cooks = await User.find({
-			role: "cook",
+			isCook: true, // support isCook flag
+			"location.coordinates": { $exists: true },
 			location: {
 				$near: {
 					$geometry: {
@@ -140,13 +145,16 @@ export const getNearbyCooks = async (req, res) => {
 					$maxDistance: searchRadius,
 				},
 			},
-		}).select("-payoutBank -walletBalance");
+		}).select("-walletBalance -payoutBank");
+
+		console.log(`Found ${cooks.length} cooks`);
 
 		res.status(200).json({
 			count: cooks.length,
 			cooks,
 		});
 	} catch (error) {
+		console.error(error);
 		res.status(500).json({
 			message: "Failed to fetch nearby cooks",
 			error: error.message,
