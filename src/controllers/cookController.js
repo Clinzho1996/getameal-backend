@@ -3,11 +3,12 @@ import CookProfile from "../models/CookProfile.js";
 import User from "../models/User.js";
 
 // Get single cook by ID
+// Get single cook by ID
 export const getCookById = async (req, res) => {
 	try {
 		const cook = await User.findOne({
 			_id: req.params.id,
-			role: "cook",
+			$or: [{ role: "cook" }, { isCook: true }],
 		});
 
 		if (!cook) {
@@ -32,7 +33,9 @@ export const getCookById = async (req, res) => {
 // Get all cooks
 export const getAllCooks = async (req, res) => {
 	try {
-		const cooks = await User.find({ role: "cook" }).select(
+		const cooks = await User.find({
+			$or: [{ role: "cook" }, { isCook: true }],
+		}).select(
 			"_id fullName profileImage cookAddress cookingExperience availableForCooking",
 		);
 
@@ -62,6 +65,7 @@ export const getAllCooks = async (req, res) => {
 	}
 };
 // Become a cook
+
 export const becomeCook = async (req, res) => {
 	try {
 		const {
@@ -71,6 +75,8 @@ export const becomeCook = async (req, res) => {
 			experience,
 			startImmediately,
 			availableDate,
+			latitude,
+			longitude,
 		} = req.body;
 
 		const userId = req.user.id;
@@ -117,12 +123,22 @@ export const becomeCook = async (req, res) => {
 		user.cookingExperience = experience;
 		user.availableForCooking = startImmediately ? new Date() : availableDate;
 
+		// If latitude and longitude are provided, save as location
+		if (latitude && longitude) {
+			user.location = {
+				type: "Point",
+				coordinates: [parseFloat(longitude), parseFloat(latitude)],
+				address,
+			};
+		}
+
 		await user.save();
 
 		res.status(201).json({
 			message: "Application submitted. Awaiting admin approval.",
 			status: "pending_approval",
 			cookProfile,
+			userLocation: user.location || null,
 		});
 	} catch (error) {
 		res.status(500).json({
