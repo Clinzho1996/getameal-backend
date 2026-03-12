@@ -1,3 +1,4 @@
+import CookProfile from "../models/CookProfile.js";
 import OTP from "../models/OTP.js";
 import User from "../models/User.js";
 import { sendOTPEmail } from "../utils/emailService.js";
@@ -203,6 +204,7 @@ export const loginVerify = async (req, res) => {
 		}
 
 		const user = await User.findOne({ email });
+		const cookProfile = await CookProfile.findOne({ userId: user._id });
 
 		if (!user) {
 			return res.status(404).json({
@@ -216,6 +218,8 @@ export const loginVerify = async (req, res) => {
 			message: "Login successful",
 			token,
 			user,
+			isCook: !!cookProfile,
+			cookProfile,
 		});
 	} catch (error) {
 		res.status(500).json({
