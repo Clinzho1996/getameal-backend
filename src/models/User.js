@@ -3,10 +3,10 @@ import mongoose from "mongoose";
 const userSchema = new mongoose.Schema(
 	{
 		email: { type: String, unique: true },
-		fullName: String,
+		fullName: String, // user's real name
 		phone: String,
-		role: { type: String, enum: ["user", "cook", "admin"], default: "user" },
-		isCook: { type: Boolean, default: false },
+		role: { type: String, enum: ["user", "admin"], default: "user" }, // remove 'cook' from enum
+		isCook: { type: Boolean, default: false }, // true if the user has a cook profile
 		bio: String,
 		profileImage: Object,
 		coverImage: Object,
@@ -15,21 +15,10 @@ const userSchema = new mongoose.Schema(
 			coordinates: [Number],
 			address: String,
 		},
-		walletBalance: { type: Number, default: 0 },
 		savedCooks: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 		notificationToken: String,
 		isVerified: { type: Boolean, default: false },
-		cookAddress: String,
-		cookingExperience: { type: String },
-		availableForCooking: { type: Date },
-		cookSince: { type: Date },
-		pickupAvailable: { type: Boolean, default: true },
-		favorites: [
-			{
-				type: mongoose.Schema.Types.ObjectId,
-				ref: "User",
-			},
-		],
+		favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 	},
 	{ timestamps: true },
 );

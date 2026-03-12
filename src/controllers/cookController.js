@@ -88,24 +88,23 @@ export const becomeCook = async (req, res) => {
 		}
 
 		const user = await User.findById(userId);
-
-		if (!user) {
-			return res.status(404).json({
-				message: "User not found",
-			});
-		}
+		if (!user) return res.status(404).json({ message: "User not found" });
 
 		// Check if already applied
 		const existingCook = await CookProfile.findOne({ userId });
-
 		if (existingCook) {
 			return res.status(400).json({
 				message: "You have already applied to become a cook",
 			});
 		}
 
+		// Create cook profile
 		const cookProfile = await CookProfile.create({
 			userId,
+			cookName,
+			phone,
+			cookAddress: address,
+			cookingExperience: experience,
 			availablePickup: true,
 			schedule: startImmediately
 				? ["Immediate"]
@@ -113,32 +112,28 @@ export const becomeCook = async (req, res) => {
 					? [availableDate]
 					: [],
 			isApproved: false,
+			isAvailable: true,
+			location:
+				latitude && longitude
+					? {
+							type: "Point",
+							coordinates: [parseFloat(longitude), parseFloat(latitude)],
+							address,
+						}
+					: undefined,
+			availableForCooking: startImmediately ? new Date() : availableDate,
 		});
 
-		// Update user basic cook info
-		user.role = "cook";
-		user.fullName = cookName;
-		user.phone = phone;
-		user.cookAddress = address;
-		user.cookingExperience = experience;
-		user.availableForCooking = startImmediately ? new Date() : availableDate;
-
-		// If latitude and longitude are provided, save as location
-		if (latitude && longitude) {
-			user.location = {
-				type: "Point",
-				coordinates: [parseFloat(longitude), parseFloat(latitude)],
-				address,
-			};
-		}
-
+		// Update user flag only
+		user.isCook = true;
+		// Optionally keep role as "user" to avoid overwriting user info
 		await user.save();
 
 		res.status(201).json({
-			message: "Application submitted. Awaiting admin approval.",
+			message: "Cook application submitted. Awaiting admin approval.",
 			status: "pending_approval",
 			cookProfile,
-			userLocation: user.location || null,
+			userLocation: cookProfile.location || null,
 		});
 	} catch (error) {
 		res.status(500).json({
