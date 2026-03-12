@@ -1,6 +1,7 @@
 import cloudinary from "cloudinary";
 import dotenv from "dotenv";
 import fs from "fs";
+import mongoose from "mongoose";
 import Meal from "../models/Meal.js";
 import User from "../models/User.js";
 
@@ -233,5 +234,91 @@ export const getRelatedMeals = async (req, res) => {
 		res.json({ currentMeal: meal._id, relatedMeals });
 	} catch (error) {
 		res.status(500).json({ message: error.message });
+	}
+};
+
+// Add meal to favorites
+export const addFavoriteMeal = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const { mealId } = req.params;
+
+		if (!mongoose.Types.ObjectId.isValid(mealId)) {
+			return res.status(400).json({ message: "Invalid meal ID" });
+		}
+
+		// 1. Verify meal exists
+		const mealExists = await Meal.exists({ _id: mealId });
+		if (!mealExists) {
+			return res.status(404).json({ message: "Meal not found" });
+		}
+
+		// 2. Add to favorites array in User model
+		const updatedUser = await User.findByIdAndUpdate(
+			userId,
+			{ $addToSet: { favorites: mealId } }, // $addToSet prevents duplicate favorites
+			{ returnDocument: "after" },
+		).select("favorites");
+
+		res.json({
+			message: "Meal added to favorites",
+			favorites: updatedUser.favorites,
+		});
+	} catch (error) {
+		res
+			.status(500)
+			.json({ message: "Failed to add favorite meal", error: error.message });
+	}
+};
+
+// Remove meal from favorites
+export const removeFavoriteMeal = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const { mealId } = req.params;
+
+		const updatedUser = await User.findByIdAndUpdate(
+			userId,
+			{ $pull: { favorites: mealId } }, // Atomic remove
+			{ returnDocument: "after" },
+		).select("favorites");
+
+		res.json({
+			message: "Meal removed from favorites",
+			favorites: updatedUser.favorites,
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: "Failed to remove favorite meal",
+			error: error.message,
+		});
+	}
+};
+
+// Get all favorite meals
+export const getFavoriteMeals = async (req, res) => {
+	try {
+		const userId = req.user.id;
+
+		// 1. Get the user and just the IDs first
+		const user = await User.findById(userId).select("favorites");
+
+		if (!user || !user.favorites || user.favorites.length === 0) {
+			return res.json([]); // Return early if no IDs exist
+		}
+
+		// 2. Fetch the actual meals from the Meal collection using those IDs
+		const favoriteMeals = await Meal.find({
+			_id: { $in: user.favorites },
+		}).populate("cookId", "fullName profileImage");
+
+		res.json(favoriteMeals);
+	} catch (error) {
+		res
+			.status(500)
+			.json({
+				message: "Failed to fetch favorite meals",
+				error: error.message,
+			});
 	}
 };

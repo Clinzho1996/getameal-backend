@@ -1,4 +1,5 @@
 // controllers/cookController.js
+import mongoose from "mongoose";
 import CookProfile from "../models/CookProfile.js";
 import User from "../models/User.js";
 
@@ -168,51 +169,105 @@ export const addFavoriteCook = async (req, res) => {
 		const userId = req.user.id;
 		const { cookId } = req.params;
 
-		const user = await User.findById(userId);
-
-		if (!user.favorites.includes(cookId)) {
-			user.favorites.push(cookId);
-			await user.save();
+		if (!mongoose.Types.ObjectId.isValid(cookId)) {
+			return res.status(400).json({ message: "Invalid cook ID" });
 		}
 
-		res.json({ message: "Cook added to favorites" });
+		// 1. Verify the target user exists and is actually a cook
+		const cookExists = await User.exists({ _id: cookId, isCook: true });
+		if (!cookExists) {
+			return res.status(404).json({ message: "Cook not found" });
+		}
+
+		// 2. Add to savedCooks (using $addToSet to prevent duplicates)
+		const updatedUser = await User.findByIdAndUpdate(
+			userId,
+			{ $addToSet: { savedCooks: cookId } }, // Targeting the correct field
+			{ returnDocument: "after" },
+		).select("savedCooks");
+
+		res.json({
+			message: "Cook saved to your list",
+			savedCooks: updatedUser.savedCooks,
+		});
 	} catch (error) {
-		res.status(500).json({ message: "Failed to add favorite" });
+		res
+			.status(500)
+			.json({ message: "Failed to save cook", error: error.message });
+	}
+};
+// Get all favorite cooks
+export const getFavoriteCooks = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const user = await User.findById(userId).select("savedCooks");
+
+		if (!user || !user.savedCooks || user.savedCooks.length === 0) {
+			return res.json([]);
+		}
+
+		// Pass savedCooks to your helper
+		const favoriteCooks = await getFavoriteCooksHelper(user.savedCooks);
+		res.json(favoriteCooks);
+	} catch (error) {
+		res
+			.status(500)
+			.json({ message: "Failed to fetch saved cooks", error: error.message });
 	}
 };
 
+// Remove a cook from favorites
 export const removeFavoriteCook = async (req, res) => {
 	try {
 		const userId = req.user.id;
 		const { cookId } = req.params;
 
-		const user = await User.findById(userId);
+		const updatedUser = await User.findByIdAndUpdate(
+			userId,
+			{ $pull: { savedCooks: cookId } }, // Targeting the correct field
+			{ returnDocument: "after" },
+		).select("savedCooks");
 
-		user.favorites = user.favorites.filter((id) => id.toString() !== cookId);
+		const favoriteCooks = await getFavoriteCooksHelper(updatedUser.savedCooks);
 
-		await user.save();
-
-		res.json({ message: "Cook removed from favorites" });
+		res.json({
+			message: "Cook removed from saved list",
+			savedCooks: favoriteCooks,
+		});
 	} catch (error) {
-		res.status(500).json({ message: "Failed to remove favorite" });
+		res
+			.status(500)
+			.json({ message: "Failed to remove cook", error: error.message });
 	}
 };
 
-export const getFavoriteCooks = async (req, res) => {
-	try {
-		const userId = req.user.id;
+const getFavoriteCooksHelper = async (favoriteIds) => {
+	if (!favoriteIds || favoriteIds.length === 0) return [];
 
-		const user = await User.findById(userId).populate({
-			path: "favorites",
-			select: "name email profileImage rating role",
-		});
+	// Convert all strings to ObjectIds safely
+	const ids = favoriteIds.map((id) => new mongoose.Types.ObjectId(id));
 
-		if (!user) {
-			return res.status(404).json({ message: "User not found" });
-		}
+	// Find the Users
+	const favoriteUsers = await User.find({
+		_id: { $in: ids },
+		isCook: true,
+	})
+		.select("_id fullName profileImage isCook")
+		.lean();
 
-		res.json(user.favorites);
-	} catch (error) {
-		res.status(500).json({ message: "Failed to fetch favorites" });
-	}
+	// Find the corresponding Cook Profiles
+	const cookProfiles = await CookProfile.find({
+		userId: { $in: ids },
+	}).lean();
+
+	// Merge them
+	return favoriteUsers.map((user) => {
+		const profile = cookProfiles.find(
+			(p) => p.userId.toString() === user._id.toString(),
+		);
+		return {
+			...user,
+			cookProfile: profile || null,
+		};
+	});
 };

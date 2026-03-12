@@ -1,11 +1,14 @@
 import express from "express";
 import {
+	addFavoriteMeal,
 	createMeal,
 	deleteMeal,
+	getFavoriteMeals,
 	getMealById,
 	getMeals,
 	getMealsByCook,
 	getRelatedMeals,
+	removeFavoriteMeal,
 	searchMeals,
 	updateMeal,
 } from "../controllers/mealController.js";
@@ -15,6 +18,8 @@ import { upload } from "../middleware/upload.js";
 const router = express.Router();
 
 // Use `upload.array('images', 5)` to allow up to 5 images
+
+router.get("/favorites", protect, getFavoriteMeals);
 router.post("/create", protect, upload.array("images", 5), createMeal);
 router.get("/", getMeals);
 router.get("/search", searchMeals);
@@ -24,5 +29,8 @@ router.get("/cook/:cookId", getMealsByCook);
 router.get("/:id/related", protect, getRelatedMeals);
 router.patch("/:id", protect, upload.array("images", 5), updateMeal);
 router.delete("/:id", protect, deleteMeal);
+
+router.post("/favorites/:mealId", protect, addFavoriteMeal);
+router.delete("/favorites/:mealId", protect, removeFavoriteMeal);
 
 export default router;
