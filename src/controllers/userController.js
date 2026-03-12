@@ -1,6 +1,7 @@
 import cloudinary from "cloudinary";
 import dotenv from "dotenv";
 import Cart from "../models/Cart.js";
+import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
 import User from "../models/User.js";
 dotenv.config();
@@ -128,12 +129,23 @@ export const getMyProfile = async (req, res) => {
 	try {
 		const user = await User.findById(req.user._id).select("-password");
 
-		if (!user)
+		if (!user) {
 			return res.status(404).json({
 				message: "User not found",
 			});
+		}
 
-		res.json(user);
+		let cookProfile = null;
+
+		if (user.isCook) {
+			cookProfile = await CookProfile.findOne({ userId: user._id });
+		}
+
+		res.json({
+			user,
+			isCook: user.isCook,
+			cookProfile,
+		});
 	} catch (error) {
 		res.status(500).json({
 			message: error.message,
@@ -146,12 +158,23 @@ export const getUserProfile = async (req, res) => {
 	try {
 		const user = await User.findById(req.params.id).select("-password");
 
-		if (!user)
+		if (!user) {
 			return res.status(404).json({
 				message: "User not found",
 			});
+		}
 
-		res.json(user);
+		let cookProfile = null;
+
+		if (user.isCook) {
+			cookProfile = await CookProfile.findOne({ userId: user._id });
+		}
+
+		res.json({
+			user,
+			isCook: user.isCook,
+			cookProfile,
+		});
 	} catch (error) {
 		res.status(500).json({
 			message: error.message,
