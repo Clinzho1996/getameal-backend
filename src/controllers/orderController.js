@@ -15,84 +15,56 @@ export const createOrder = async (req, res) => {
 	session.startTransaction();
 
 	try {
-		const { mealId, quantity, deliveryType, paymentType, note } = req.body;
+		const items = req.body; // array
 
-		const meal = await Meal.findById(mealId).session(session);
+		let totalAmount = 0;
+		let mealItems = [];
+		let cookId = null;
 
-		if (!meal || meal.portionsRemaining < quantity)
-			throw new Error("Not enough portions available");
+		for (const item of items) {
+			const { mealId, quantity } = item;
 
-		meal.portionsRemaining -= quantity;
-		await meal.save({ session });
+			const meal = await Meal.findById(mealId).session(session);
 
-		const total = meal.price * quantity;
+			if (!meal || meal.portionsRemaining < quantity) {
+				throw new Error(`Not enough portions for meal ${mealId}`);
+			}
 
-		let paymentLinkCode = null;
+			meal.portionsRemaining -= quantity;
+			await meal.save({ session });
 
-		// generate friend payment code
-		if (paymentType === "friend") {
-			paymentLinkCode =
-				"GATH-" + crypto.randomBytes(3).toString("hex").toUpperCase();
+			totalAmount += meal.price * quantity;
+
+			mealItems.push({
+				mealId,
+				quantity,
+				price: meal.price,
+			});
+
+			// assume same cook for all meals
+			if (!cookId) cookId = meal.cookId;
 		}
 
 		const order = await Order.create(
 			[
 				{
 					userId: req.user._id,
-					cookId: meal.cookId,
-					mealItems: [{ mealId, quantity, price: meal.price }],
-					totalAmount: total,
-					deliveryType,
-					note,
-					paymentType,
+					cookId,
+					mealItems,
+					totalAmount,
+					deliveryType: items[0].deliveryType,
+					note: items[0].note,
+					paymentType: items[0].paymentType,
 					paymentReference: new mongoose.Types.ObjectId().toString(),
-					paymentLinkCode,
 				},
 			],
-			{ session },
+			{ session }
 		);
 
-		const createdOrder = order[0];
+		await session.commitTransaction();
+		session.endSession();
 
-		// If user pays immediately
-		if (paymentType === "self") {
-			const paystack = await axios.post(
-				"https://api.paystack.co/transaction/initialize",
-				{
-					email: req.user.email,
-					amount: total * 100,
-					reference: createdOrder.paymentReference,
-					callback_url: "getameal://payment-success",
-					metadata: {
-						orderId: createdOrder._id,
-					},
-				},
-				{
-					headers: {
-						Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
-					},
-				},
-			);
-
-			await session.commitTransaction();
-			session.endSession();
-
-			return res.json({
-				order: createdOrder,
-				paymentUrl: paystack.data.data.authorization_url,
-			});
-		}
-
-		// If friend pays
-		if (paymentType === "friend") {
-			await session.commitTransaction();
-			session.endSession();
-
-			return res.json({
-				order: createdOrder,
-				paymentLink: `${process.env.API_URL}/pay/${paymentLinkCode}`,
-			});
-		}
+		res.json(order[0]);
 	} catch (error) {
 		await session.abortTransaction();
 		session.endSession();
