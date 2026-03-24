@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import mongoose from "mongoose";
 import Meal from "../models/Meal.js";
+import Order from "../models/Order.js";
 import User from "../models/User.js";
 
 dotenv.config();
@@ -326,11 +327,8 @@ export const getMealsByDateForCook = async (req, res) => {
 		const cookId = req.user._id;
 		const { date } = req.query;
 
-		if (!date) {
-			return res.status(400).json({ message: "Date is required" });
-		}
+		if (!date) return res.status(400).json({ message: "Date is required" });
 
-		// Normalize date to start and end of day
 		const start = new Date(date);
 		start.setHours(0, 0, 0, 0);
 
@@ -343,10 +341,55 @@ export const getMealsByDateForCook = async (req, res) => {
 		})
 			.sort({ cookingDate: 1 })
 			.select(
-				"name description price images portionsRemaining cookingDate quantityLabel category",
+				"name description price images portionsRemaining cookingDate quantityLabel category status", // ✅ include status
 			);
 
 		res.json(meals);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const updateMealStatus = async (req, res) => {
+	try {
+		const { status } = req.body; // "cooking" or "ready"
+		const { id } = req.params;
+
+		if (!["cooking", "ready"].includes(status)) {
+			return res.status(400).json({ message: "Invalid status" });
+		}
+
+		const meal = await Meal.findById(id);
+		if (!meal) return res.status(404).json({ message: "Meal not found" });
+
+		// Only owner cook can update
+		if (meal.cookId.toString() !== req.user._id.toString()) {
+			return res.status(403).json({ message: "Not authorized" });
+		}
+
+		meal.status = status;
+		await meal.save();
+
+		res.json({ message: "Meal status updated", meal });
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const getOrdersByMeal = async (req, res) => {
+	try {
+		const { id } = req.params;
+
+		if (!mongoose.Types.ObjectId.isValid(id)) {
+			return res.status(400).json({ message: "Invalid meal ID" });
+		}
+
+		const orders = await Order.find({ "mealItems.mealId": id })
+			.populate("userId", "fullName email")
+			.populate("cookId", "fullName email")
+			.sort({ createdAt: -1 });
+
+		res.json({ id, orders });
 	} catch (error) {
 		res.status(500).json({ message: error.message });
 	}

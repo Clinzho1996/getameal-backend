@@ -25,7 +25,11 @@ const mealSchema = new mongoose.Schema(
 		rating: { type: Number, default: 0 },
 		reviewsCount: { type: Number, default: 0 },
 		ordersCount: { type: Number, default: 0 },
-		status: { type: String, enum: ["open", "closed"], default: "open" },
+		status: {
+			type: String,
+			enum: ["open", "cooking", "ready", "closed"],
+			default: "open",
+		},
 		images: [Object],
 	},
 	{ timestamps: true },
