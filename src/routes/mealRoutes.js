@@ -7,6 +7,7 @@ import {
 	getMealById,
 	getMeals,
 	getMealsByCook,
+	getMealsByDateForCook,
 	getRelatedMeals,
 	removeFavoriteMeal,
 	searchMeals,
@@ -19,6 +20,7 @@ const router = express.Router();
 
 // Use `upload.array('images', 5)` to allow up to 5 images
 
+router.get("/date", protect, getMealsByDateForCook);
 router.get("/favorites", protect, getFavoriteMeals);
 router.post("/create", protect, upload.array("images", 5), createMeal);
 router.get("/", getMeals);
@@ -28,6 +30,7 @@ router.get("/:id", getMealById);
 router.get("/cook/:cookId", getMealsByCook);
 router.get("/:id/related", protect, getRelatedMeals);
 router.patch("/:id", protect, upload.array("images", 5), updateMeal);
+
 router.delete("/:id", protect, deleteMeal);
 
 router.post("/favorites/:mealId", protect, addFavoriteMeal);

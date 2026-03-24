@@ -314,11 +314,40 @@ export const getFavoriteMeals = async (req, res) => {
 
 		res.json(favoriteMeals);
 	} catch (error) {
-		res
-			.status(500)
-			.json({
-				message: "Failed to fetch favorite meals",
-				error: error.message,
-			});
+		res.status(500).json({
+			message: "Failed to fetch favorite meals",
+			error: error.message,
+		});
+	}
+};
+
+export const getMealsByDateForCook = async (req, res) => {
+	try {
+		const cookId = req.user._id;
+		const { date } = req.query;
+
+		if (!date) {
+			return res.status(400).json({ message: "Date is required" });
+		}
+
+		// Normalize date to start and end of day
+		const start = new Date(date);
+		start.setHours(0, 0, 0, 0);
+
+		const end = new Date(date);
+		end.setHours(23, 59, 59, 999);
+
+		const meals = await Meal.find({
+			cookId,
+			cookingDate: { $gte: start, $lte: end },
+		})
+			.sort({ cookingDate: 1 })
+			.select(
+				"name description price images portionsRemaining cookingDate quantityLabel category",
+			);
+
+		res.json(meals);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
 	}
 };

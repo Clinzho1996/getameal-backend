@@ -3,23 +3,40 @@ import CookProfile from "../models/CookProfile.js";
 import PendingTransfer from "../models/PendingTransfer.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 
+/**
+ * Request payout
+ */
 export const requestPayout = async (req, res) => {
-	const { amount } = req.body;
-
-	if (req.user.role !== "cook") {
-		return res.status(403).json({ message: "Only cooks can request payout" });
-	}
-
 	try {
-		const cookProfile = await CookProfile.findOne({ userId: req.user._id });
-		if (!cookProfile)
+		const { amount } = req.body; // amount should be in naira
+		const userId = req.user._id;
+
+		if (!amount || amount <= 0) {
+			return res.status(400).json({ message: "Invalid payout amount" });
+		}
+
+		// Find cook profile
+		const cookProfile = await CookProfile.findOne({ userId });
+		if (!cookProfile) {
 			return res.status(404).json({ message: "Cook profile not found" });
+		}
 
-		if (!cookProfile.bankDetails)
+		if (!cookProfile.bankDetails) {
 			return res.status(400).json({ message: "Bank details not set" });
+		}
 
-		if (cookProfile.walletBalance < amount)
-			return res.status(400).json({ message: "Insufficient balance" });
+		console.log(
+			"Wallet balance:",
+			cookProfile.walletBalance,
+			"Requested payout:",
+			amount,
+		);
+
+		if (cookProfile.walletBalance < amount) {
+			return res.status(400).json({
+				message: `Insufficient balance. Your wallet has ${cookProfile.walletBalance}`,
+			});
+		}
 
 		let recipientCode = cookProfile.bankDetails.recipientCode;
 
@@ -46,18 +63,18 @@ export const requestPayout = async (req, res) => {
 			recipientCode = recipient.data.data.recipient_code;
 		}
 
-		// Initiate transfer
+		// Initiate transfer (amount in kobo)
 		const transfer = await paystack.post("/transfer", {
 			source: "balance",
-			amount: amount * 100, // kobo
+			amount: amount * 100, // Convert naira → kobo
 			recipient: recipientCode,
 		});
 
 		const transferData = transfer.data.data;
 
-		// Record a pending transfer internally, regardless of OTP
+		// Record pending transfer internally
 		await PendingTransfer.create({
-			cookId: req.user._id,
+			cookId: userId,
 			amount,
 			transferCode: transferData.transfer_code,
 			status: transferData.status === "otp" ? "pending_otp" : "pending",
@@ -65,7 +82,6 @@ export const requestPayout = async (req, res) => {
 
 		console.log("Paystack transfer initiated", transferData);
 
-		// Always return a generic response to the cook
 		return res.status(200).json({
 			message: "Payout request received and is being processed",
 			amount,
@@ -82,6 +98,9 @@ export const requestPayout = async (req, res) => {
 	}
 };
 
+/**
+ * Verify payout with OTP
+ */
 export const verifyPayoutOTP = async (req, res) => {
 	const { transferCode, otp } = req.body;
 
@@ -92,7 +111,6 @@ export const verifyPayoutOTP = async (req, res) => {
 	}
 
 	try {
-		// 1. Find the pending transfer in our DB
 		const pendingTransfer = await PendingTransfer.findOne({
 			transferCode,
 			status: "pending_otp",
@@ -106,7 +124,7 @@ export const verifyPayoutOTP = async (req, res) => {
 
 		const amount = pendingTransfer.amount;
 
-		// 2. Check transfer status from Paystack
+		// Check transfer status from Paystack
 		const statusResponse = await paystack.get(`/transfer/${transferCode}`);
 		const transferData = statusResponse.data.data;
 
@@ -116,10 +134,8 @@ export const verifyPayoutOTP = async (req, res) => {
 				.json({ message: "Transfer not found on Paystack" });
 		}
 
-		const currentStatus = transferData.status; // 'otp', 'success', etc.
-		const recipientId = transferData.recipient; // this is an ID or string
+		const currentStatus = transferData.status;
 
-		// 3. Look up cook profile by recipientCode (string saved earlier)
 		const cookProfile = await CookProfile.findOne({
 			"bankDetails.recipientCode": transferData.recipient_code || undefined,
 		});
@@ -128,9 +144,8 @@ export const verifyPayoutOTP = async (req, res) => {
 			return res.status(404).json({ message: "Cook profile not found" });
 		}
 
-		// 4. If transfer already succeeded
+		// If transfer already succeeded
 		if (currentStatus === "success") {
-			// Only finalize wallet if transaction doesn't exist yet
 			const existingTransaction = await WalletTransaction.findOne({
 				cookId: cookProfile.userId,
 				type: "payout",
@@ -154,7 +169,7 @@ export const verifyPayoutOTP = async (req, res) => {
 			return res.json({ message: "Payout already processed successfully" });
 		}
 
-		// 5. If OTP is required, finalize transfer
+		// Finalize OTP
 		if (currentStatus === "otp") {
 			const verification = await paystack.post("/transfer/finalize_transfer", {
 				transfer_code: transferCode,
@@ -170,7 +185,6 @@ export const verifyPayoutOTP = async (req, res) => {
 				});
 			}
 
-			// Deduct wallet and record transaction
 			cookProfile.walletBalance -= amount;
 			await cookProfile.save();
 
@@ -188,7 +202,6 @@ export const verifyPayoutOTP = async (req, res) => {
 			});
 		}
 
-		// 6. Any other unexpected status
 		return res.status(400).json({
 			message: `Cannot process transfer in status: ${currentStatus}`,
 			details: transferData,
@@ -198,6 +211,66 @@ export const verifyPayoutOTP = async (req, res) => {
 		return res.status(500).json({
 			message: "OTP verification failed",
 			error: err.response?.data || err.message,
+		});
+	}
+};
+
+/**
+ * Get payout history for a cook
+ */
+export const getPayoutHistory = async (req, res) => {
+	try {
+		const userId = req.user._id;
+
+		// Find cook profile
+		const cookProfile = await CookProfile.findOne({ userId });
+		if (!cookProfile) {
+			return res
+				.status(403)
+				.json({ message: "You are not registered as a cook" });
+		}
+
+		// Completed payouts
+		const completed = await WalletTransaction.find({
+			cookId: userId,
+			type: "payout",
+		})
+			.sort({ createdAt: -1 })
+			.lean();
+
+		// Pending payouts
+		const pending = await PendingTransfer.find({
+			cookId: userId,
+		})
+			.sort({ createdAt: -1 })
+			.lean();
+
+		const formattedCompleted = completed.map((tx) => ({
+			id: tx._id,
+			amount: tx.amount,
+			status: "completed",
+			type: "payout",
+			createdAt: tx.createdAt,
+		}));
+
+		const formattedPending = pending.map((p) => ({
+			id: p._id,
+			amount: p.amount,
+			status: p.status,
+			transferCode: p.transferCode,
+			type: "payout",
+			createdAt: p.createdAt,
+		}));
+
+		const history = [...formattedPending, ...formattedCompleted].sort(
+			(a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+		);
+
+		return res.json(history);
+	} catch (error) {
+		return res.status(500).json({
+			message: "Failed to fetch payout history",
+			error: error.message,
 		});
 	}
 };

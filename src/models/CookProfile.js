@@ -7,7 +7,7 @@ const cookSchema = new mongoose.Schema(
 			ref: "User",
 			required: true,
 		},
-		cookName: { type: String, required: true },
+		cookName: { type: String, required: false },
 		phone: { type: String },
 		cookAddress: String,
 		cookingExperience: String,

@@ -125,6 +125,9 @@ export const updateOrder = async (req, res) => {
 				"cooking",
 				"ready",
 				"out_for_delivery",
+				"delivered",
+				"picked_up",
+				"cancelled",
 			];
 			if (!allowedStatuses.includes(status)) {
 				return res.status(400).json({ message: "Invalid status update" });
@@ -313,6 +316,115 @@ export const verifyDeliveryOTP = async (req, res) => {
 			order,
 			cookWalletBalance: cook.walletBalance,
 		});
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const getNewOrders = async (req, res) => {
+	try {
+		const orders = await Order.find({
+			cookId: req.user.id,
+			status: "pending",
+		})
+			.populate("userId", "fullName profileImage")
+			.populate("mealItems.mealId", "name image price")
+			.sort({ createdAt: -1 });
+
+		res.json(orders);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const getActiveOrders = async (req, res) => {
+	try {
+		const orders = await Order.find({
+			cookId: req.user.id,
+			status: {
+				$in: ["confirmed", "cooking", "ready", "out_for_delivery"],
+			},
+		})
+			.populate("userId", "fullName profileImage")
+			.populate("mealItems.mealId", "name image price")
+			.sort({ createdAt: -1 });
+
+		res.json(orders);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const getCompletedOrders = async (req, res) => {
+	try {
+		const orders = await Order.find({
+			cookId: req.user.id,
+			status: { $in: ["delivered", "picked_up"] },
+		})
+			.populate("userId", "fullName profileImage")
+			.sort({ createdAt: -1 });
+
+		res.json(orders);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const getPastOrders = async (req, res) => {
+	try {
+		const orders = await Order.find({
+			cookId: req.user.id,
+			status: {
+				$in: ["delivered", "picked_up", "cancelled"],
+			},
+		}).sort({ createdAt: -1 });
+
+		res.json(orders);
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const getCookOrderStats = async (req, res) => {
+	try {
+		const cookId = new mongoose.Types.ObjectId(req.user.id);
+
+		const stats = await Order.aggregate([
+			{ $match: { cookId } },
+			{
+				$group: {
+					_id: "$status",
+					count: { $sum: 1 },
+				},
+			},
+		]);
+
+		const formatted = {
+			pending: 0,
+			active: 0,
+			completed: 0,
+			cancelled: 0,
+		};
+
+		stats.forEach((s) => {
+			if (s._id === "pending") formatted.pending += s.count;
+
+			if (
+				["confirmed", "cooking", "ready", "out_for_delivery"].includes(s._id)
+			) {
+				formatted.active += s.count;
+			}
+
+			if (["delivered", "picked_up"].includes(s._id)) {
+				formatted.completed += s.count;
+			}
+
+			if (s._id === "cancelled") {
+				formatted.cancelled += s.count;
+			}
+		});
+
+		res.json(formatted);
 	} catch (error) {
 		res.status(500).json({ message: error.message });
 	}
