@@ -13,6 +13,7 @@ const orderSchema = new mongoose.Schema(
 			required: true,
 		},
 		totalAmount: { type: Number, required: true },
+
 		mealItems: [
 			{
 				mealId: { type: mongoose.Schema.Types.ObjectId, ref: "Meal" },
@@ -20,8 +21,16 @@ const orderSchema = new mongoose.Schema(
 				price: Number,
 			},
 		],
+
 		deliveryType: { type: String, enum: ["pickup", "delivery"] },
 		deliveryAddress: Object,
+
+		// ✅ ADD THIS
+		note: {
+			type: String,
+			default: "",
+		},
+
 		status: {
 			type: String,
 			enum: [
@@ -36,11 +45,13 @@ const orderSchema = new mongoose.Schema(
 			],
 			default: "pending",
 		},
+
 		paymentStatus: {
 			type: String,
 			enum: ["pending", "paid", "refunded"],
 			default: "pending",
 		},
+
 		paymentReference: String,
 		friendPaymentCode: String,
 		serviceFee: Number,

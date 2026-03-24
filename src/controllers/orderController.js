@@ -7,7 +7,6 @@ import WalletTransaction from "../models/WalletTransaction.js";
 import { sendOTPEmail } from "../utils/emailService.js";
 import { emitOrderUpdate, sendNotification } from "../utils/Notification.js";
 
-// Create a new order (transaction safe)
 import crypto from "crypto";
 
 export const createOrder = async (req, res) => {
@@ -15,23 +14,46 @@ export const createOrder = async (req, res) => {
 	session.startTransaction();
 
 	try {
-		const items = req.body; // array
+		const { items, deliveryType, paymentType, note } = req.body;
+
+		// ✅ Validation
+		if (!items || !Array.isArray(items) || items.length === 0) {
+			throw new Error("No items provided");
+		}
 
 		let totalAmount = 0;
 		let mealItems = [];
 		let cookId = null;
 
+		// ✅ Loop through items safely
 		for (const item of items) {
 			const { mealId, quantity } = item;
 
-			const meal = await Meal.findById(mealId).session(session);
+			if (!mealId || !quantity) {
+				throw new Error("Invalid item format");
+			}
 
-			if (!meal || meal.portionsRemaining < quantity) {
+			// ✅ Atomic stock update (prevents race conditions)
+			const meal = await Meal.findOneAndUpdate(
+				{
+					_id: mealId,
+					portionsRemaining: { $gte: quantity },
+				},
+				{
+					$inc: { portionsRemaining: -quantity },
+				},
+				{ new: true, session },
+			);
+
+			if (!meal) {
 				throw new Error(`Not enough portions for meal ${mealId}`);
 			}
 
-			meal.portionsRemaining -= quantity;
-			await meal.save({ session });
+			// ✅ Ensure same cook (important for your system)
+			if (!cookId) cookId = meal.cookId;
+			if (cookId.toString() !== meal.cookId.toString()) {
+				throw new Error("All meals must be from the same cook");
+			}
 
 			totalAmount += meal.price * quantity;
 
@@ -40,11 +62,13 @@ export const createOrder = async (req, res) => {
 				quantity,
 				price: meal.price,
 			});
-
-			// assume same cook for all meals
-			if (!cookId) cookId = meal.cookId;
 		}
 
+		// ✅ Generate clean payment reference
+		const paymentReference =
+			"PAY-" + crypto.randomBytes(6).toString("hex").toUpperCase();
+
+		// ✅ Create order
 		const order = await Order.create(
 			[
 				{
@@ -52,19 +76,68 @@ export const createOrder = async (req, res) => {
 					cookId,
 					mealItems,
 					totalAmount,
-					deliveryType: items[0].deliveryType,
-					note: items[0].note,
-					paymentType: items[0].paymentType,
-					paymentReference: new mongoose.Types.ObjectId().toString(),
+					deliveryType,
+					note, // ✅ single note
+					paymentType,
+					paymentReference,
 				},
 			],
-			{ session }
+			{ session },
 		);
 
+		const createdOrder = order[0];
+
+		// ✅ Handle Paystack payment
+		if (paymentType === "self") {
+			const paystack = await axios.post(
+				"https://api.paystack.co/transaction/initialize",
+				{
+					email: req.user.email,
+					amount: totalAmount * 100, // kobo
+					reference: paymentReference,
+					callback_url: "getameal://payment-success",
+					metadata: {
+						orderId: createdOrder._id,
+					},
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+					},
+				},
+			);
+
+			await session.commitTransaction();
+			session.endSession();
+
+			return res.json({
+				order: createdOrder,
+				paymentUrl: paystack.data.data.authorization_url, // ✅ THIS is what frontend must use
+			});
+		}
+
+		// ✅ Friend payment (optional)
+		if (paymentType === "friend") {
+			const paymentLinkCode =
+				"GATH-" + crypto.randomBytes(3).toString("hex").toUpperCase();
+
+			createdOrder.paymentLinkCode = paymentLinkCode;
+			await createdOrder.save();
+
+			await session.commitTransaction();
+			session.endSession();
+
+			return res.json({
+				order: createdOrder,
+				paymentLink: `${process.env.API_URL}/pay/${paymentLinkCode}`,
+			});
+		}
+
+		// ✅ Default fallback
 		await session.commitTransaction();
 		session.endSession();
 
-		res.json(order[0]);
+		res.json({ order: createdOrder });
 	} catch (error) {
 		await session.abortTransaction();
 		session.endSession();
