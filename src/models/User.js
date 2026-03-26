@@ -19,6 +19,13 @@ const userSchema = new mongoose.Schema(
 		notificationToken: String,
 		isVerified: { type: Boolean, default: false },
 		favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+		password: {
+			type: String,
+			required: function () {
+				return this.role === "admin";
+			},
+			select: false,
+		},
 	},
 	{ timestamps: true },
 );

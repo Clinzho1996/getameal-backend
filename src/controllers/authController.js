@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import CookProfile from "../models/CookProfile.js";
 import OTP from "../models/OTP.js";
 import User from "../models/User.js";
@@ -5,6 +6,138 @@ import { sendOTPEmail } from "../utils/emailService.js";
 import { generateOTP } from "../utils/generateOtp.js";
 import { generateToken } from "../utils/jwt.js";
 
+export const createAdmin = async (req, res) => {
+	try {
+		const { email, password, name } = req.body;
+
+		const existing = await User.findOne({ email });
+
+		if (existing) {
+			return res.status(409).json({ message: "Admin already exists" });
+		}
+
+		const hashedPassword = await bcrypt.hash(password, 10);
+
+		const admin = await User.create({
+			fullName: name,
+			email,
+			password: hashedPassword,
+			role: "admin",
+			isVerified: true,
+		});
+
+		res.status(201).json({
+			message: "Admin created",
+			admin,
+		});
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const adminLogin = async (req, res) => {
+	try {
+		const { email, password } = req.body;
+
+		if (!email || !password) {
+			return res.status(400).json({
+				message: "Email and password are required",
+			});
+		}
+
+		const user = await User.findOne({ email }).select("+password");
+
+		if (!user || user.role !== "admin") {
+			return res.status(401).json({
+				message: "Invalid credentials",
+			});
+		}
+
+		const isMatch = await bcrypt.compare(password, user.password);
+
+		if (!isMatch) {
+			return res.status(401).json({
+				message: "Invalid credentials",
+			});
+		}
+
+		const token = generateToken(user._id);
+		console.log("SIGN SECRET:", process.env.JWT_SECRET);
+
+		res.status(200).json({
+			message: "Admin login successful",
+			token,
+			user: {
+				_id: user._id,
+				email: user.email,
+				fullName: user.fullName,
+				role: user.role,
+			},
+		});
+	} catch (error) {
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
+	}
+};
+
+export const adminRequestPasswordReset = async (req, res) => {
+	try {
+		const { email } = req.body;
+
+		const user = await User.findOne({ email });
+
+		if (!user || user.role !== "admin") {
+			return res.status(404).json({ message: "Admin not found" });
+		}
+
+		const code = generateOTP();
+
+		await OTP.create({
+			email,
+			code,
+			expiresAt: Date.now() + 10 * 60 * 1000,
+		});
+
+		await sendOTPEmail(email, code);
+
+		res.status(200).json({
+			message: "Reset OTP sent to admin email",
+		});
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const adminResetPassword = async (req, res) => {
+	try {
+		const { email, otp, newPassword } = req.body;
+
+		const record = await OTP.findOne({ email, code: otp });
+
+		if (!record) {
+			return res.status(400).json({ message: "Invalid OTP" });
+		}
+
+		if (record.expiresAt < Date.now()) {
+			return res.status(400).json({ message: "OTP expired" });
+		}
+
+		const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+		await User.findOneAndUpdate(
+			{ email, role: "admin" },
+			{ password: hashedPassword },
+		);
+
+		res.status(200).json({
+			message: "Password reset successful",
+		});
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
 // STEP 1: Signup Init
 export const signupInit = async (req, res) => {
 	try {

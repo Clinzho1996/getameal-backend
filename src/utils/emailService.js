@@ -3,7 +3,7 @@ import { Resend } from "resend";
 
 let resendInstance = null;
 
-const getResendInstance = () => {
+export const getResendInstance = () => {
 	if (!resendInstance) {
 		if (!process.env.RESEND_API_KEY) {
 			throw new Error("Missing RESEND_API_KEY environment variable");

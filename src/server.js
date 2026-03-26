@@ -19,6 +19,7 @@ import payoutRoutes from "./routes/payoutRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import webhookRoutes from "./routes/webhooks.js";
+import adminRoutes from "./routes/adminRoutes.js"
 
 connectDB();
 
@@ -43,6 +44,7 @@ app.use("/api/locations", locationRoutes);
 app.use("/api/webhooks", webhookRoutes);
 app.use("/api/payouts", payoutRoutes);
 app.use("/api/calls", callRoutes);
+app.use("/api/admin", adminRoutes);
 
 // Socket.io
 io.on("connection", (socket) => {
