@@ -116,10 +116,10 @@ export const getAllCooks = async (req, res) => {
 		// Format response
 		const data = cooks.map((cook) => ({
 			cookId: cook._id,
-			name: cook.cookName || cook.userId.fullName,
-			phone: cook.phone || cook.userId.phone,
-			email: cook.userId.email,
-			profileImage: cook.userId.profileImage,
+			name: cook.cookName,
+			phone: cook.phone,
+			email: cook.email,
+			profileImage: cook.profileImage,
 			location: cook.location,
 			isAvailable: cook.isAvailable,
 			isApproved: cook.isApproved,

@@ -85,6 +85,53 @@ export const getCustomers = async (req, res) => {
 	}
 };
 
+// GET single customer by ID
+export const getCustomerById = async (req, res) => {
+	try {
+		const { userId } = req.params;
+
+		const user = await User.findById(userId);
+		if (!user) {
+			return res.status(404).json({ message: "User not found" });
+		}
+
+		// Fetch user's orders
+		const orders = await Order.find({ userId: user._id });
+
+		const lastOrder =
+			orders.sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+
+		// Optional: wallet transactions (if you want history)
+		const transactions = await WalletTransaction.find({
+			userId: user._id,
+		}).sort({ createdAt: -1 });
+
+		const customer = {
+			_id: user._id,
+			fullName: user.fullName,
+			email: user.email,
+			phone: user.phone,
+			status: user.status || "active",
+			city: user.location?.address || "",
+			joinedAt: user.createdAt,
+			lastActive: lastOrder ? lastOrder.updatedAt : null,
+			ordersCount: orders.length,
+			walletBalance: user.walletBalance || 0,
+			notes: user.notes || [],
+			orders, // include if needed (can remove if too heavy)
+			transactions, // include if needed
+		};
+
+		res.status(200).json({ customer });
+	} catch (error) {
+		console.error(error);
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
+	}
+};
+
 // Add note to customer
 export const addCustomerNote = async (req, res) => {
 	try {

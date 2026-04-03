@@ -32,6 +32,7 @@ import {
 	addCustomerNote,
 	creditCustomerWallet,
 	getCustomers,
+	getCustomerById,
 	messageCustomer,
 	toggleCustomerStatus,
 } from "../controllers/CustomerController.js";
@@ -83,6 +84,7 @@ router.post("/cooks/:cookId/status", protect, adminOnly, changeCookStatus);
 // Credit cook wallet
 router.post("/cooks/:cookId/credit", protect, adminOnly, creditCookWallet);
 router.post("/customers/:userId/note", protect, adminOnly, addCustomerNote);
+router.get("/customer/:userId", protect, adminOnly, getCustomerById);
 router.post("/customers/:userId/message", protect, adminOnly, messageCustomer);
 router.post(
 	"/customers/:userId/credit",

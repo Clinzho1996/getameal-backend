@@ -274,19 +274,42 @@ export const getAllOrders = async (req, res) => {
 		const orders = await Order.find(query)
 			.populate("userId", "fullName phone")
 			.populate("cookId", "fullName phone")
+			.populate("mealItems.mealId", "name images price") // ✅ add this
 			.sort({ createdAt: -1 })
 			.skip((page - 1) * limit)
 			.limit(Number(limit));
 
 		const total = await Order.countDocuments(query);
 
+		// ✅ Format response
+		const formattedOrders = orders.map((order) => ({
+			_id: order._id,
+			user: order.userId,
+			cook: order.cookId,
+			totalAmount: order.totalAmount,
+			status: order.status,
+			paymentStatus: order.paymentStatus,
+			deliveryType: order.deliveryType,
+			deliveryAddress: order.deliveryAddress,
+			createdAt: order.createdAt,
+
+			mealItems: order.mealItems.map((item) => ({
+				mealId: item.mealId?._id,
+				name: item.mealId?.name,
+				images: item.mealId?.images || [],
+				price: item.price,
+				quantity: item.quantity,
+			})),
+		}));
+
 		res.json({
 			page: Number(page),
 			total,
 			pages: Math.ceil(total / limit),
-			orders,
+			orders: formattedOrders,
 		});
 	} catch (error) {
+		console.error(error);
 		res.status(500).json({ message: error.message });
 	}
 };
@@ -294,16 +317,41 @@ export const getAllOrders = async (req, res) => {
 export const getOrderById = async (req, res) => {
 	try {
 		const order = await Order.findById(req.params.id)
-			.populate("userId")
-			.populate("cookId")
-			.populate("mealItems.mealId");
+			.populate("userId", "fullName email")
+			.populate("cookId", "fullName email")
+			.populate("mealItems.mealId", "name images price");
 
 		if (!order) {
 			return res.status(404).json({ message: "Order not found" });
 		}
 
-		res.json(order);
+		// Transform mealItems to include only what you need
+		const formattedMealItems = order.mealItems.map((item) => ({
+			mealId: item.mealId?._id,
+			name: item.mealId?.name,
+			images: item.mealId?.images || [],
+			price: item.price,
+			quantity: item.quantity,
+		}));
+
+		const formattedOrder = {
+			_id: order._id,
+			user: order.userId,
+			cook: order.cookId,
+			totalAmount: order.totalAmount,
+			status: order.status,
+			paymentStatus: order.paymentStatus,
+			deliveryType: order.deliveryType,
+			deliveryAddress: order.deliveryAddress,
+			note: order.note,
+			mealItems: formattedMealItems,
+			createdAt: order.createdAt,
+			updatedAt: order.updatedAt,
+		};
+
+		res.status(200).json(formattedOrder);
 	} catch (error) {
+		console.error(error);
 		res.status(500).json({ message: error.message });
 	}
 };
