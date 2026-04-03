@@ -140,6 +140,88 @@ export const getOverviewStats = async (req, res) => {
 	}
 };
 
+export const getOrderAnalytics = async (req, res) => {
+	try {
+		const { zone } = req.query;
+
+		const now = new Date();
+
+		// Today range
+		const startOfToday = new Date();
+		startOfToday.setHours(0, 0, 0, 0);
+
+		const endOfToday = new Date();
+		endOfToday.setHours(23, 59, 59, 999);
+
+		// Base filter
+		const baseFilter = {};
+		if (zone) {
+			baseFilter["deliveryAddress.region"] = zone;
+		}
+
+		// At risk threshold (e.g., 45 mins)
+		const atRiskThreshold = new Date(Date.now() - 45 * 60 * 1000);
+
+		const [
+			totalOrders,
+			ordersToday,
+			activeOrders,
+			completedOrders,
+			cancelledOrders,
+			atRiskOrders,
+		] = await Promise.all([
+			// Total orders
+			Order.countDocuments(baseFilter),
+
+			// Orders today
+			Order.countDocuments({
+				...baseFilter,
+				createdAt: { $gte: startOfToday, $lte: endOfToday },
+			}),
+
+			// Active orders (in progress)
+			Order.countDocuments({
+				...baseFilter,
+				status: { $in: ["pending", "confirmed", "cooking", "ready"] },
+			}),
+
+			// Completed orders
+			Order.countDocuments({
+				...baseFilter,
+				status: { $in: ["delivered", "picked_up"] },
+			}),
+
+			// Cancelled orders
+			Order.countDocuments({
+				...baseFilter,
+				status: "cancelled",
+			}),
+
+			// At risk orders
+			Order.countDocuments({
+				...baseFilter,
+				status: { $in: ["pending", "confirmed", "cooking"] },
+				createdAt: { $lte: atRiskThreshold },
+			}),
+		]);
+
+		res.status(200).json({
+			totalOrders,
+			ordersToday,
+			activeOrders,
+			completedOrders,
+			cancelledOrders,
+			atRiskOrders,
+		});
+	} catch (error) {
+		console.error(error);
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
+	}
+};
+
 export const getOrderChart = async (req, res) => {
 	try {
 		const { start, end, zone } = req.query;

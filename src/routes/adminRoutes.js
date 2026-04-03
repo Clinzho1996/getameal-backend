@@ -5,6 +5,7 @@ import {
 	getAllOrders,
 	getAtRiskOrders,
 	getFulfillmentTime,
+	getOrderAnalytics,
 	getOrderById,
 	getOrderChart,
 	getOverviewStats,
@@ -47,6 +48,7 @@ router.get("/stats/orders-chart", protect, adminOnly, getOrderChart);
 router.get("/stats/fulfilment", protect, adminOnly, getFulfillmentTime);
 router.get("/system-alerts", protect, adminOnly, getSystemAlerts);
 router.get("/orders", protect, adminOnly, getAllOrders);
+router.get("/orders/analytics", protect, adminOnly, getOrderAnalytics);
 router.get("/orders/filter", protect, adminOnly, getAllMainOrders);
 router.get("/orders/at-risk", protect, adminOnly, getAtRiskOrders);
 router.get("/customers", protect, adminOnly, protect, getCustomers);
