@@ -1,4 +1,5 @@
 // controllers/cookController.js
+import crypto from "crypto";
 import mongoose from "mongoose";
 import CookProfile from "../models/CookProfile.js";
 import User from "../models/User.js";
@@ -65,6 +66,29 @@ export const getAllCooks = async (req, res) => {
 		res.status(500).json({ message: error.message });
 	}
 };
+
+export const referCook = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const user = await User.findById(userId);
+
+		if (!user) return res.status(404).json({ message: "User not found" });
+
+		// If user already has a referral code, return it
+		if (!user.referralCode) {
+			user.referralCode =
+				"REF-" + crypto.randomBytes(3).toString("hex").toUpperCase();
+			await user.save();
+		}
+
+		res.json({
+			message: "Referral code generated",
+			referralCode: user.referralCode,
+		});
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
 // Become a cook
 
 export const becomeCook = async (req, res) => {
@@ -78,6 +102,7 @@ export const becomeCook = async (req, res) => {
 			availableDate,
 			latitude,
 			longitude,
+			referralCode,
 		} = req.body;
 
 		const userId = req.user.id;

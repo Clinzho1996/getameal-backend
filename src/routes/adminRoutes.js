@@ -32,11 +32,16 @@ import {
 import {
 	addCustomerNote,
 	creditCustomerWallet,
-	getCustomers,
 	getCustomerById,
+	getCustomers,
 	messageCustomer,
 	toggleCustomerStatus,
 } from "../controllers/CustomerController.js";
+import {
+	createNotification,
+	sendBulkNotification,
+	sendPushToAllUsers,
+} from "../controllers/notificationController.js";
 import adminOnly from "../middleware/admin.js";
 import protect from "../middleware/auth.js";
 
@@ -64,6 +69,10 @@ router.get("/payments/stats", protect, adminOnly, getPaymentStats);
 // List payments
 router.get("/payments", protect, adminOnly, getPayments);
 router.get("/search", protect, adminOnly, globalSearch);
+
+router.post("/send-to-all", protect, adminOnly, sendPushToAllUsers);
+router.post("/create", protect, adminOnly, createNotification);
+router.post("/bulk", protect, adminOnly, sendBulkNotification);
 
 // Single payment
 router.get("/payments/:id", protect, adminOnly, getPaymentById);

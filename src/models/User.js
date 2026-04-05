@@ -15,8 +15,28 @@ const userSchema = new mongoose.Schema(
 			coordinates: [Number],
 			address: String,
 		},
+		// Add fields for referral
+		referralCode: { type: String, unique: true, sparse: true },
+		referredBy: { type: mongoose.Types.ObjectId, ref: "User", default: null },
 		savedCooks: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-		notificationToken: String,
+		pushTokens: {
+			type: [
+				{
+					token: { type: String, required: true },
+					platform: { type: String, enum: ["ios", "android"], required: true },
+					deviceId: { type: mongoose.Schema.Types.Mixed, default: null },
+					lastUsed: { type: Date, default: Date.now },
+					createdAt: { type: Date, default: Date.now },
+				},
+			],
+			default: [],
+		},
+		notificationSettings: {
+			push_enabled: { type: Boolean, default: true },
+			email_enabled: { type: Boolean, default: true },
+			transactions: { type: Boolean, default: true },
+			promotions: { type: Boolean, default: false },
+		},
 		isVerified: { type: Boolean, default: false },
 		favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 		password: {

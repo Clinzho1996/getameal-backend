@@ -5,9 +5,10 @@ import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 import { sendOTPEmail } from "../utils/emailService.js";
-import { emitOrderUpdate, sendNotification } from "../utils/Notification.js";
+import { emitOrderUpdate } from "../utils/Notification.js";
 
 import crypto from "crypto";
+import { sendNotification } from "../services/notificationService.js";
 
 export const createOrder = async (req, res) => {
 	const session = await mongoose.startSession();
@@ -16,59 +17,37 @@ export const createOrder = async (req, res) => {
 	try {
 		const { items, deliveryType, paymentType, note } = req.body;
 
-		// ✅ Validation
-		if (!items || !Array.isArray(items) || items.length === 0) {
+		if (!items || !Array.isArray(items) || items.length === 0)
 			throw new Error("No items provided");
-		}
 
 		let totalAmount = 0;
 		let mealItems = [];
 		let cookId = null;
 
-		// ✅ Loop through items safely
 		for (const item of items) {
 			const { mealId, quantity } = item;
+			if (!mealId || !quantity) throw new Error("Invalid item format");
 
-			if (!mealId || !quantity) {
-				throw new Error("Invalid item format");
-			}
-
-			// ✅ Atomic stock update (prevents race conditions)
 			const meal = await Meal.findOneAndUpdate(
-				{
-					_id: mealId,
-					portionsRemaining: { $gte: quantity },
-				},
-				{
-					$inc: { portionsRemaining: -quantity },
-				},
+				{ _id: mealId, portionsRemaining: { $gte: quantity } },
+				{ $inc: { portionsRemaining: -quantity } },
 				{ new: true, session },
 			);
 
-			if (!meal) {
-				throw new Error(`Not enough portions for meal ${mealId}`);
-			}
+			if (!meal) throw new Error(`Not enough portions for meal ${mealId}`);
 
-			// ✅ Ensure same cook (important for your system)
 			if (!cookId) cookId = meal.cookId;
-			if (cookId.toString() !== meal.cookId.toString()) {
+			if (cookId.toString() !== meal.cookId.toString())
 				throw new Error("All meals must be from the same cook");
-			}
 
 			totalAmount += meal.price * quantity;
 
-			mealItems.push({
-				mealId,
-				quantity,
-				price: meal.price,
-			});
+			mealItems.push({ mealId, quantity, price: meal.price });
 		}
 
-		// ✅ Generate clean payment reference
 		const paymentReference =
 			"PAY-" + crypto.randomBytes(6).toString("hex").toUpperCase();
 
-		// ✅ Create order
 		const order = await Order.create(
 			[
 				{
@@ -77,7 +56,7 @@ export const createOrder = async (req, res) => {
 					mealItems,
 					totalAmount,
 					deliveryType,
-					note, // ✅ single note
+					note,
 					paymentType,
 					paymentReference,
 				},
@@ -87,36 +66,32 @@ export const createOrder = async (req, res) => {
 
 		const createdOrder = order[0];
 
-		// ✅ Handle Paystack payment
+		await session.commitTransaction();
+		session.endSession();
+
+		// Handle Paystack
 		if (paymentType === "self") {
 			const paystack = await axios.post(
 				"https://api.paystack.co/transaction/initialize",
 				{
 					email: req.user.email,
-					amount: totalAmount * 100, // kobo
+					amount: totalAmount * 100,
 					reference: paymentReference,
-					callback_url: "getameal://payment-success",
-					metadata: {
-						orderId: createdOrder._id,
-					},
+					callback_url: `${process.env.API_URL}/orders/payment/redirect?orderId=${createdOrder._id}&reference=${paymentReference}`,
+					metadata: { orderId: createdOrder._id },
 				},
 				{
-					headers: {
-						Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
-					},
+					headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET}` },
 				},
 			);
 
-			await session.commitTransaction();
-			session.endSession();
-
 			return res.json({
 				order: createdOrder,
-				paymentUrl: paystack.data.data.authorization_url, // ✅ THIS is what frontend must use
+				paymentUrl: paystack.data.data.authorization_url,
 			});
 		}
 
-		// ✅ Friend payment (optional)
+		// Friend payment
 		if (paymentType === "friend") {
 			const paymentLinkCode =
 				"GATH-" + crypto.randomBytes(3).toString("hex").toUpperCase();
@@ -124,28 +99,135 @@ export const createOrder = async (req, res) => {
 			createdOrder.paymentLinkCode = paymentLinkCode;
 			await createdOrder.save();
 
-			await session.commitTransaction();
-			session.endSession();
+			// 🔐 Initialize Paystack transaction
+			const paymentReference = `FRIEND-${Date.now()}`;
+
+			const paystackRes = await axios.post(
+				"https://api.paystack.co/transaction/initialize",
+				{
+					email: createdOrder.userEmail || "friend@getameal.com", // fallback
+					amount: createdOrder.totalAmount * 100, // kobo
+					reference: paymentReference,
+					callback_url: `${process.env.API_URL}/orders/payment/redirect?orderId=${createdOrder._id}&reference=${paymentReference}`,
+					metadata: {
+						orderId: createdOrder._id,
+						paymentType: "friend",
+						paymentLinkCode,
+					},
+				},
+				{
+					headers: {
+						Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+						"Content-Type": "application/json",
+					},
+				},
+			);
 
 			return res.json({
 				order: createdOrder,
-				paymentLink: `${process.env.API_URL}/pay/${paymentLinkCode}`,
+				paymentLinkCode,
+				deepLink: `getameal://payment-friend/pay/${paymentLinkCode}`,
+				paystackUrl: paystackRes.data.data.authorization_url,
+				reference: paymentReference,
 			});
 		}
-
-		// ✅ Default fallback
-		await session.commitTransaction();
-		session.endSession();
 
 		res.json({ order: createdOrder });
 	} catch (error) {
 		await session.abortTransaction();
 		session.endSession();
-
 		res.status(400).json({ message: error.message });
 	}
 };
 
+export const paymentRedirect = async (req, res) => {
+	try {
+		const { orderId, reference } = req.query;
+
+		// Redirect to mobile deep link
+		return res.redirect(
+			`getameal://payment-success?orderId=${orderId}&reference=${reference}`,
+		);
+	} catch (error) {
+		console.error("Redirect error:", error);
+		res.status(500).send("Redirect failed");
+	}
+};
+
+export const handlePaymentCallback = async (req, res) => {
+	try {
+		const { reference, orderId } = req.query;
+
+		if (!reference || !orderId) {
+			return res.status(400).json({ message: "Missing reference or orderId" });
+		}
+
+		// 🔐 Verify payment with Paystack
+		const verify = await axios.get(
+			`https://api.paystack.co/transaction/verify/${reference}`,
+			{
+				headers: {
+					Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+				},
+			},
+		);
+
+		const paymentData = verify.data.data;
+
+		if (paymentData.status !== "success") {
+			return res.status(400).json({ message: "Payment not successful" });
+		}
+
+		let order = null;
+
+		// 1. Try metadata lookup (friend flow)
+		const paymentLinkCode = paymentData.metadata?.paymentLinkCode;
+
+		if (paymentLinkCode) {
+			order = await Order.findOne({ paymentLinkCode });
+		}
+
+		// 2. Fallback to orderId (CRITICAL)
+		if (!order && orderId) {
+			order = await Order.findById(orderId)
+				.populate("mealItems.mealId")
+				.populate("cookId")
+				.populate("userId");
+		}
+
+		// 3. Final fail
+		if (!order) {
+			console.error("Order lookup failed", {
+				reference,
+				orderId,
+				metadata: paymentData.metadata,
+			});
+			return res.status(404).json({ message: "Order not found" });
+		}
+
+		if (!order) {
+			return res.status(404).json({ message: "Order not found" });
+		}
+
+		// Prevent double processing
+		if (order.paymentStatus === "paid") {
+			return res.json({ message: "Already processed", order });
+		}
+
+		// ✅ Update order
+		order.paymentStatus = "paid";
+		order.status = "confirmed";
+		await order.save();
+
+		emitOrderUpdate(order);
+		sendNotification(order.userId, "Payment successful, order confirmed");
+
+		res.json({ message: "Payment verified successfully", order });
+	} catch (error) {
+		console.error("Payment verification error:", error);
+		res.status(500).json({ message: error.message });
+	}
+};
 // Update order (Owner or Cook)
 export const updateOrder = async (req, res) => {
 	try {

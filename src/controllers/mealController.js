@@ -154,6 +154,55 @@ export const deleteMeal = async (req, res) => {
 	}
 };
 
+export const duplicateMeal = async (req, res) => {
+	try {
+		const { id } = req.params;
+
+		// Validate ID
+		if (!mongoose.Types.ObjectId.isValid(id)) {
+			return res.status(400).json({ message: "Invalid meal ID" });
+		}
+
+		// Find original meal
+		const originalMeal = await Meal.findById(id);
+		if (!originalMeal) {
+			return res.status(404).json({ message: "Meal not found" });
+		}
+
+		// Ensure only owner can duplicate
+		if (originalMeal.cookId.toString() !== req.user._id.toString()) {
+			return res.status(403).json({ message: "Not authorized" });
+		}
+
+		// Duplicate meal
+		const duplicatedMeal = new Meal({
+			cookId: originalMeal.cookId,
+			category: originalMeal.category,
+			name: `${originalMeal.name} (Copy)`,
+			description: originalMeal.description,
+			unitsPerQuantity: originalMeal.unitsPerQuantity,
+			price: originalMeal.price,
+			quantityLabel: originalMeal.quantityLabel,
+			portionsTotal: originalMeal.portionsTotal,
+			portionsRemaining: originalMeal.portionsTotal, // reset
+			cookingDate: originalMeal.cookingDate,
+			pickupWindow: originalMeal.pickupWindow,
+			deliveryRegions: originalMeal.deliveryRegions,
+			images: originalMeal.images, // reuse images
+			status: "open", // reset status
+		});
+
+		await duplicatedMeal.save();
+
+		res.status(201).json({
+			message: "Meal duplicated successfully",
+			meal: duplicatedMeal,
+		});
+	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
 // Search meals
 export const searchMeals = async (req, res) => {
 	try {
@@ -355,7 +404,7 @@ export const updateMealStatus = async (req, res) => {
 		const { status } = req.body; // "cooking" or "ready"
 		const { id } = req.params;
 
-		if (!["cooking", "ready"].includes(status)) {
+		if (!["cooking", "ready", "closed", "open"].includes(status)) {
 			return res.status(400).json({ message: "Invalid status" });
 		}
 

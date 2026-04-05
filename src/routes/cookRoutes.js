@@ -8,6 +8,7 @@ import {
 	becomeCook,
 	getAllCooks,
 	getCookById,
+	referCook,
 	updateCookProfile,
 } from "../controllers/cookController.js";
 import protect from "../middleware/auth.js";
@@ -16,6 +17,7 @@ const router = express.Router();
 
 // Become a cook
 router.post("/become", protect, becomeCook);
+router.post("/referral", protect, referCook); // New referral route
 router.post("/bank", protect, addCookBankAccount);
 router.put("/bank", protect, updateCookBankAccount);
 router.delete("/bank", protect, deleteCookBankAccount);

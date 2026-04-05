@@ -1,10 +1,21 @@
 import { Resend } from "resend";
 import CookProfile from "../models/CookProfile.js";
+import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 
 // Helper for Resend
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resendInstance = null;
+
+const getResendInstance = () => {
+	if (!resendInstance) {
+		if (!process.env.RESEND_API_KEY) {
+			throw new Error("Missing RESEND_API_KEY environment variable");
+		}
+		resendInstance = new Resend(process.env.RESEND_API_KEY);
+	}
+	return resendInstance;
+};
 
 // ------------------ Stats ------------------
 export const getCookStats = async (req, res) => {
@@ -141,12 +152,42 @@ export const getAllCooks = async (req, res) => {
 export const getCookById = async (req, res) => {
 	try {
 		const { cookId } = req.params;
+
+		// Get the cook profile and populate user info
 		const cook = await CookProfile.findById(cookId).populate(
 			"userId",
 			"fullName email phone profileImage",
 		);
-		if (!cook) return res.status(404).json({ message: "Cook not found" });
-		res.status(200).json(cook);
+
+		if (!cook) {
+			return res.status(404).json({ message: "Cook not found" });
+		}
+
+		// Get meals created by this cook
+		const meals = await Meal.find({ cookId: cook.userId._id }) // match the User ID
+			.select(
+				"name description price images category status portionsRemaining createdAt",
+			)
+			.sort({ createdAt: -1 });
+
+		// Format meals if needed
+		const formattedMeals = meals.map((meal) => ({
+			_id: meal._id,
+			name: meal.name,
+			description: meal.description,
+			category: meal.category,
+			price: meal.price,
+			images: meal.images || [],
+			status: meal.status,
+			portionsRemaining: meal.portionsRemaining,
+			createdAt: meal.createdAt,
+		}));
+
+		res.status(200).json({
+			cook,
+			meals: formattedMeals,
+			totalMeals: formattedMeals.length,
+		});
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ message: "Server error", error: error.message });
@@ -156,6 +197,7 @@ export const getCookById = async (req, res) => {
 // ------------------ Message cook ------------------
 export const messageCook = async (req, res) => {
 	try {
+		const resend = getResendInstance();
 		const { cookId } = req.params;
 		const { subject, message } = req.body;
 		const cook = await CookProfile.findById(cookId).populate(
@@ -209,14 +251,14 @@ export const changeCookStatus = async (req, res) => {
 
 		if (action === "suspend") cook.isAvailable = false;
 		else if (action === "activate") cook.isAvailable = true;
-		else if (action === "setActive") cook.isAvailable = true;
-		else if (action === "setInactive") cook.isAvailable = false;
+		else if (action === "setActive") cook.isApproved = true;
+		else if (action === "setInactive") cook.isApproved = false;
 		else return res.status(400).json({ message: "Invalid action" });
 
 		await cook.save();
 		res.status(200).json({
 			message: `Cook ${action}`,
-			status: cook.isAvailable ? "active" : "inactive",
+			status: cook.isApproved ? "approved" : "rejected",
 		});
 	} catch (error) {
 		console.error(error);
@@ -243,6 +285,8 @@ export const creditCookWallet = async (req, res) => {
 			reference: reason,
 			note,
 		});
+
+		
 
 		res.status(200).json({
 			message: "Cook wallet credited",

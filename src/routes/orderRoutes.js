@@ -9,6 +9,8 @@ import {
 	getNewOrders,
 	getOrderById,
 	getPastOrders,
+	handlePaymentCallback,
+	paymentRedirect,
 	sendDeliveryOTP,
 	updateOrder,
 	updatePaymentStatus,
@@ -19,6 +21,8 @@ import protect from "../middleware/auth.js"; // ✅ default import
 const router = express.Router();
 
 router.post("/", protect, createOrder);
+router.post("/payment/callback", handlePaymentCallback);
+router.get("/payment/redirect", paymentRedirect);
 router.get("/mine", protect, getMyOrders);
 // Cook Orders
 router.get("/new", protect, getNewOrders);

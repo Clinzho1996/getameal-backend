@@ -3,6 +3,7 @@ import {
 	addFavoriteMeal,
 	createMeal,
 	deleteMeal,
+	duplicateMeal,
 	getFavoriteMeals,
 	getMealById,
 	getMeals,
@@ -33,6 +34,7 @@ router.get("/cook/:cookId", getMealsByCook);
 router.get("/:id/related", protect, getRelatedMeals);
 router.patch("/:id", protect, upload.array("images", 5), updateMeal);
 router.patch("/:id/status", protect, updateMealStatus);
+router.post("/:id/duplicate", protect, duplicateMeal);
 router.delete("/:id", protect, deleteMeal);
 router.get("/:id/orders", protect, getOrdersByMeal);
 router.post("/favorites/:mealId", protect, addFavoriteMeal);

@@ -7,6 +7,7 @@ import http from "http";
 import morgan from "morgan";
 import { Server } from "socket.io";
 import connectDB from "./config/db.js";
+import adminRoutes from "./routes/adminRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import bankRoutes from "./routes/bankRoutes.js";
 import callRoutes from "./routes/callRoutes.js";
@@ -14,12 +15,12 @@ import cookRoutes from "./routes/cookRoutes.js";
 import foodCategoryRoutes from "./routes/foodCategoryRoutes.js";
 import locationRoutes from "./routes/locationRoutes.js";
 import mealRoutes from "./routes/mealRoutes.js";
+import notificationRoutes from "./routes/notification.js";
 import orderRoutes from "./routes/orderRoutes.js";
 import payoutRoutes from "./routes/payoutRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import webhookRoutes from "./routes/webhooks.js";
-import adminRoutes from "./routes/adminRoutes.js"
 
 connectDB();
 
@@ -45,6 +46,7 @@ app.use("/api/webhooks", webhookRoutes);
 app.use("/api/payouts", payoutRoutes);
 app.use("/api/calls", callRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // Socket.io
 io.on("connection", (socket) => {
