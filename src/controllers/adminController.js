@@ -1,6 +1,7 @@
 import axios from "axios";
 import mongoose from "mongoose";
 import CookProfile from "../models/CookProfile.js";
+import Notification from "../models/Notification.js";
 import Order from "../models/Order.js";
 import Review from "../models/Review.js";
 import User from "../models/User.js";
@@ -839,5 +840,38 @@ export const globalSearch = async (req, res) => {
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ message: "Search failed", error: error.message });
+	}
+};
+
+export const getAllNotifications = async (req, res) => {
+	try {
+		// Optional: Add pagination
+		const page = parseInt(req.query.page) || 1;
+		const limit = parseInt(req.query.limit) || 50;
+		const skip = (page - 1) * limit;
+
+		// Fetch notifications sorted by latest first
+		const notifications = await Notification.find({ userId: null })
+			.sort({ createdAt: -1 })
+			.skip(skip)
+			.limit(limit)
+			.populate("userId", "fullName email role") // User who triggered action
+			.populate("targetId") // Could be order, meal, cook, review, payment, etc.
+			.lean();
+
+		// Optional: total count for frontend pagination
+		const totalCount = await Notification.countDocuments({});
+
+		res.json({
+			page,
+			limit,
+			totalCount,
+			notifications,
+		});
+	} catch (error) {
+		console.error("Error fetching notifications:", error);
+		res
+			.status(500)
+			.json({ message: "Failed to fetch notifications", error: error.message });
 	}
 };

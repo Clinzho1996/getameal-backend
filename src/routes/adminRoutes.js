@@ -2,6 +2,7 @@ import express from "express";
 import {
 	cancelOrder,
 	getAllMainOrders,
+	getAllNotifications,
 	getAllOrders,
 	getAtRiskOrders,
 	getFulfillmentTime,
@@ -62,6 +63,7 @@ router.get("/cooks/stats", protect, adminOnly, getCookStats);
 
 // Fetch all cooks with filters
 router.get("/cooks", protect, adminOnly, getAllCooks);
+router.get("/notifications", protect, adminOnly, getAllNotifications);
 router.get("/snapshot", protect, adminOnly, getSnapshot);
 // Stats
 router.get("/payments/stats", protect, adminOnly, getPaymentStats);

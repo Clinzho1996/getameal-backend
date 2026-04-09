@@ -1,5 +1,7 @@
 import axios from "axios";
+import City from "../models/City.js";
 import User from "../models/User.js";
+import { getCityCoordinates } from "../utils/geoCode.js";
 
 export const getStates = async (req, res) => {
 	try {
@@ -18,8 +20,17 @@ export const getCitiesByState = async (req, res) => {
 	try {
 		const { stateCode } = req.params;
 
-		const code = stateCode.split("-")[1]; // NG-LA → LA
+		// Extract LA from NG-LA
+		const code = stateCode.split("-")[1];
 
+		// 1. Check DB cache first
+		const existingCities = await City.find({ stateCode: code });
+
+		if (existingCities.length > 0) {
+			return res.json(existingCities);
+		}
+
+		// 2. Fetch from CountryStateCity API
 		const response = await axios.get(
 			`https://api.countrystatecity.in/v1/countries/NG/states/${code}/cities`,
 			{
@@ -29,7 +40,32 @@ export const getCitiesByState = async (req, res) => {
 			},
 		);
 
-		res.json(response.data);
+		const cities = response.data;
+
+		// 3. Enrich with coordinates (IMPORTANT: rate-limit safe)
+		const enrichedCities = [];
+
+		for (const city of cities) {
+			const coords = await getCityCoordinates(city.name, code);
+
+			const newCity = {
+				name: city.name,
+				stateCode: code,
+				latitude: coords?.lat || null,
+				longitude: coords?.lng || null,
+			};
+
+			enrichedCities.push(newCity);
+
+			// Optional: small delay to avoid rate limits
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+
+		// 4. Save to DB
+		await City.insertMany(enrichedCities);
+
+		// 5. Return response
+		res.json(enrichedCities);
 	} catch (error) {
 		console.error(error.response?.data || error.message);
 		res.status(500).json({ message: "Failed to fetch cities" });
