@@ -1,5 +1,6 @@
 import axios from "axios";
 import CookProfile from "../models/CookProfile.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 
 export const getBanks = async (req, res) => {
 	try {
@@ -87,6 +88,13 @@ export const addCookBankAccount = async (req, res) => {
 			message: "Bank account added successfully",
 			bankDetails: cook.bankDetails,
 		});
+
+		await createAdminNotification({
+			title: "Bank Account Added",
+			body: `A new bank account was added for ${req.user.fullName}`,
+			type: "cook",
+			data: { cookId: cook._id },
+		});
 	} catch (error) {
 		res.status(500).json({
 			message: "Failed to add bank account",
@@ -128,6 +136,13 @@ export const updateCookBankAccount = async (req, res) => {
 
 		await cook.save();
 
+		await createAdminNotification({
+			title: "Bank Account Updated",
+			body: `The bank account for ${req.user.fullName} was updated`,
+			type: "cook",
+			data: { cookId: cook._id },
+		});
+
 		res.json({
 			message: "Bank account updated successfully",
 			bankDetails: cook.bankDetails,
@@ -155,6 +170,13 @@ export const deleteCookBankAccount = async (req, res) => {
 		cook.bankDetails = undefined;
 
 		await cook.save();
+
+		await createAdminNotification({
+			title: "Bank Account Removed",
+			body: `The bank account for ${req.user.fullName} was removed`,
+			type: "cook",
+			data: { cookId: cook._id },
+		});
 
 		res.json({
 			message: "Bank account removed successfully",

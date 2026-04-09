@@ -1,10 +1,15 @@
 import axios from "axios";
+import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
+import { nanoid } from "nanoid";
 import CookProfile from "../models/CookProfile.js";
 import Notification from "../models/Notification.js";
 import Order from "../models/Order.js";
 import Review from "../models/Review.js";
+import Session from "../models/Session.js"; // tracks user login sessions
 import User from "../models/User.js";
+import Zone from "../models/Zone.js";
+import { getResendInstance } from "../utils/emailService.js";
 import { getDateRanges } from "../utils/getDateRange.js";
 
 export const getOverviewStats = async (req, res) => {
@@ -355,33 +360,32 @@ export const getAllOrders = async (req, res) => {
 		}
 
 		const orders = await Order.find(query)
-			.populate("userId", "fullName phone")
-			.populate("cookId", "fullName phone")
-			.populate("mealItems.mealId", "name images price") // ✅ add this
+			.populate("userId") // return full user object
+			.populate("cookId") // return full cook object
+			.populate("mealItems.mealId") // return full meal object
 			.sort({ createdAt: -1 })
 			.skip((page - 1) * limit)
 			.limit(Number(limit));
 
 		const total = await Order.countDocuments(query);
 
-		// ✅ Format response
 		const formattedOrders = orders.map((order) => ({
 			_id: order._id,
-			user: order.userId,
-			cook: order.cookId,
+			user: order.userId, // full user object
+			cook: order.cookId, // full cook object
 			totalAmount: order.totalAmount,
 			status: order.status,
 			paymentStatus: order.paymentStatus,
 			deliveryType: order.deliveryType,
 			deliveryAddress: order.deliveryAddress,
 			createdAt: order.createdAt,
-
 			mealItems: order.mealItems.map((item) => ({
 				mealId: item.mealId?._id,
 				name: item.mealId?.name,
 				images: item.mealId?.images || [],
 				price: item.price,
 				quantity: item.quantity,
+				fullMeal: item.mealId, // full meal object
 			})),
 		}));
 
@@ -873,5 +877,182 @@ export const getAllNotifications = async (req, res) => {
 		res
 			.status(500)
 			.json({ message: "Failed to fetch notifications", error: error.message });
+	}
+};
+
+// ---------------- Admin Profile ----------------
+export const getAdminProfile = async (req, res) => {
+	try {
+		const admin = await User.findById(req.user.id);
+		res.json(admin);
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+export const updateAdminProfile = async (req, res) => {
+	try {
+		const { fullName, phone } = req.body;
+		const admin = await User.findById(req.user.id);
+		if (!admin) return res.status(404).json({ message: "Admin not found" });
+
+		if (fullName) admin.fullName = fullName;
+		if (phone) admin.phone = phone;
+
+		await admin.save();
+		res.json({ message: "Profile updated successfully", admin });
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+export const updateAdminPassword = async (req, res) => {
+	try {
+		const { oldPassword, newPassword, confirmPassword } = req.body;
+		if (!oldPassword || !newPassword || !confirmPassword)
+			return res
+				.status(400)
+				.json({ message: "All password fields are required" });
+		if (newPassword !== confirmPassword)
+			return res
+				.status(400)
+				.json({ message: "New password and confirm do not match" });
+
+		const admin = await User.findById(req.user.id).select("+password");
+		const isMatch = await bcrypt.compare(oldPassword, admin.password);
+		if (!isMatch)
+			return res.status(400).json({ message: "Old password is incorrect" });
+
+		admin.password = await bcrypt.hash(newPassword, 10);
+		await admin.save();
+
+		// Revoke sessions after password change
+		await Session.deleteMany({ userId: admin._id });
+
+		res.json({ message: "Password updated and sessions revoked" });
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+// ---------------- Team Management ----------------
+export const addTeamMember = async (req, res) => {
+	const resend = getResendInstance();
+	try {
+		const { fullName, email, phone, role } = req.body;
+		if (!fullName || !email || !phone || !role)
+			return res.status(400).json({ message: "All fields are required" });
+
+		const existingUser = await User.findOne({ email });
+		if (existingUser)
+			return res.status(400).json({ message: "Email already exists" });
+
+		const plainPassword = nanoid(10);
+		const hashedPassword = await bcrypt.hash(plainPassword, 10);
+
+		const user = await User.create({
+			fullName,
+			email,
+			phone,
+			role,
+			password: hashedPassword,
+			isCook: false,
+		});
+
+		// Send password via email
+		const subject = "Your Admin Account Has Been Created";
+		const message = `
+			<p>Hello ${fullName},</p>
+			<p>Your account has been created.</p>
+			<p>Email: ${email}</p>
+			<p>Password: <strong>${plainPassword}</strong></p>
+			<p>Role: ${role}</p>
+		`;
+
+		await resend.emails.send({
+			from: process.env.EMAIL_FROM,
+			to: email,
+			subject,
+			html: message,
+		});
+
+		res.status(201).json({ message: "Team member added", user });
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+export const getTeamMembers = async (req, res) => {
+	try {
+		const team = await User.find({
+			role: {
+				$in: [
+					"admin",
+					"operations agent",
+					"operations manager",
+					"customer service",
+				],
+			},
+		});
+		res.json(team);
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+// ---------------- Active Sessions ----------------
+export const getActiveSessions = async (req, res) => {
+	try {
+		const sessions = await Session.find({ userId: req.user.id });
+		res.json(sessions);
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+export const revokeSession = async (req, res) => {
+	try {
+		const { sessionId } = req.params;
+		await Session.findByIdAndDelete(sessionId);
+		res.json({ message: "Session revoked" });
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+// ---------------- Service Zones ----------------
+export const addOrUpdateZone = async (req, res) => {
+	try {
+		const { name, coverageAreas, activateImmediately = false } = req.body;
+		if (!name || !coverageAreas || !coverageAreas.length)
+			return res
+				.status(400)
+				.json({ message: "Zone name and coverage areas required" });
+
+		let zone = await Zone.findOne({ name });
+		if (zone) {
+			zone.coverageAreas = coverageAreas;
+			zone.isActive = activateImmediately;
+			await zone.save();
+		} else {
+			zone = await Zone.create({
+				name,
+				coverageAreas,
+				isActive: activateImmediately,
+			});
+		}
+
+		res.json({ message: "Zone added/updated", zone });
+	} catch (err) {
+		res.status(500).json({ message: err.message });
+	}
+};
+
+export const getZones = async (req, res) => {
+	try {
+		const zones = await Zone.find();
+		res.json(zones);
+	} catch (err) {
+		res.status(500).json({ message: err.message });
 	}
 };

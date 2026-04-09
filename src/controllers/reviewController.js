@@ -1,4 +1,5 @@
 import Review from "../models/Review.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 
 // Create Review
 export const createReview = async (req, res) => {
@@ -22,6 +23,13 @@ export const createReview = async (req, res) => {
 			targetType,
 			rating,
 			comment,
+		});
+
+		await createAdminNotification({
+			title: "Review Added",
+			body: `A new review has been submitted for ${req.user.fullName}`,
+			type: "user",
+			data: { userId: req.user._id },
 		});
 
 		res.json(review);
@@ -49,6 +57,13 @@ export const updateReview = async (req, res) => {
 		review.rating = req.body.rating || review.rating;
 
 		review.comment = req.body.comment || review.comment;
+
+		await createAdminNotification({
+			title: "Review Updated",
+			body: `A review has been updated by ${req.user.fullName}`,
+			type: "user",
+			data: { userId: req.user._id },
+		});
 
 		await review.save();
 
@@ -112,6 +127,13 @@ export const addReview = async (req, res) => {
 		...req.body,
 	});
 	res.json(review);
+
+	await createAdminNotification({
+		title: "Review Added",
+		body: `A new review has been submitted for ${req.user.fullName}`,
+		type: "user",
+		data: { userId: req.user._id },
+	});
 };
 
 export const getTargetReviews = async (req, res) => {

@@ -32,6 +32,7 @@ const cookSchema = new mongoose.Schema(
 		},
 		isApproved: { type: Boolean, default: false },
 		isAvailable: { type: Boolean, default: true },
+		isSuspended: { type: Boolean, default: false },
 	},
 	{ timestamps: true },
 );

@@ -9,6 +9,7 @@ import { emitOrderUpdate } from "../utils/Notification.js";
 
 import crypto from "crypto";
 import { sendNotification } from "../services/notificationService.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 
 export const createOrder = async (req, res) => {
 	const session = await mongoose.startSession();
@@ -63,6 +64,13 @@ export const createOrder = async (req, res) => {
 			],
 			{ session },
 		);
+
+		await createAdminNotification({
+			title: "New Order",
+			body: `A new order was placed by ${req.user.fullName}`,
+			type: "order",
+			data: { orderId: order._id },
+		});
 
 		const createdOrder = order[0];
 
@@ -222,6 +230,13 @@ export const handlePaymentCallback = async (req, res) => {
 		emitOrderUpdate(order);
 		sendNotification(order.userId, "Payment successful, order confirmed");
 
+		await createAdminNotification({
+			title: "Payment Received",
+			body: `A payment of ₦${order.totalAmount.toFixed(2)} was received from ${req.user.fullName}`,
+			type: "order",
+			data: { orderId: order._id },
+		});
+
 		res.json({ message: "Payment verified successfully", order });
 	} catch (error) {
 		console.error("Payment verification error:", error);
@@ -272,6 +287,12 @@ export const updateOrder = async (req, res) => {
 			}
 		}
 
+		await createAdminNotification({
+			title: "Order Update",
+			body: `The order status was updated by ${req.user.fullName}`,
+			type: "order",
+			data: { orderId: order._id },
+		});
 		// Apply other updates for owner or cook
 		Object.assign(order, otherUpdates);
 
@@ -300,6 +321,13 @@ export const cancelOrder = async (orderId) => {
 			headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET}` },
 		},
 	);
+
+	await createAdminNotification({
+		title: "Order Cancelled",
+		body: `The order was cancelled by ${order.userId.fullName}`,
+		type: "order",
+		data: { orderId: order._id },
+	});
 
 	order.status = "cancelled";
 	await order.save();

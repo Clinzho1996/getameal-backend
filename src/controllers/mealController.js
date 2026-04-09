@@ -2,9 +2,12 @@ import cloudinary from "cloudinary";
 import dotenv from "dotenv";
 import fs from "fs";
 import mongoose from "mongoose";
+import multer from "multer";
+import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 
 dotenv.config();
 
@@ -47,6 +50,13 @@ export const createMeal = async (req, res) => {
 			pickupWindow: req.body.pickupWindow,
 			deliveryRegions: req.body.deliveryRegions,
 			images,
+		});
+
+		await createAdminNotification({
+			title: "New Meal Created",
+			body: `A new meal was created by ${req.user.fullName}`,
+			type: "meal",
+			data: { mealId: meal._id },
 		});
 
 		await meal.save();
@@ -128,6 +138,13 @@ export const updateMeal = async (req, res) => {
 			meal.portionsRemaining = req.body.portionsTotal;
 		}
 
+		await createAdminNotification({
+			title: "Meal Updated",
+			body: `The meal "${meal.name}" was updated by ${req.user.fullName}`,
+			type: "meal",
+			data: { mealId: meal._id },
+		});
+
 		await meal.save();
 		res.json({ message: "Meal updated", meal });
 	} catch (error) {
@@ -148,6 +165,13 @@ export const deleteMeal = async (req, res) => {
 		}
 
 		await meal.deleteOne();
+
+		await createAdminNotification({
+			title: "Meal Deleted",
+			body: `The meal "${meal.name}" was deleted by ${req.user.fullName}`,
+			type: "meal",
+			data: { mealId: meal._id },
+		});
 		res.json({ message: "Meal deleted successfully" });
 	} catch (error) {
 		res.status(500).json({ message: error.message });
@@ -190,6 +214,13 @@ export const duplicateMeal = async (req, res) => {
 			deliveryRegions: originalMeal.deliveryRegions,
 			images: originalMeal.images, // reuse images
 			status: "open", // reset status
+		});
+
+		await createAdminNotification({
+			title: "Meal Duplicated",
+			body: `The meal "${originalMeal.name}" was duplicated by ${req.user.fullName}`,
+			type: "meal",
+			data: { mealId: duplicatedMeal._id },
 		});
 
 		await duplicatedMeal.save();
@@ -419,6 +450,13 @@ export const updateMealStatus = async (req, res) => {
 		meal.status = status;
 		await meal.save();
 
+		await createAdminNotification({
+			title: "Meal Status Updated",
+			body: `The meal "${meal.name}" status was updated to "${status}" by ${req.user.fullName}`,
+			type: "meal",
+			data: { mealId: meal._id, status },
+		});
+
 		res.json({ message: "Meal status updated", meal });
 	} catch (error) {
 		res.status(500).json({ message: error.message });
@@ -443,3 +481,99 @@ export const getOrdersByMeal = async (req, res) => {
 		res.status(500).json({ message: error.message });
 	}
 };
+
+const upload = multer({ dest: "uploads/" });
+
+export const adminCreateMeal = [
+	upload.array("images"), // "images" = name of file input in form-data
+	async (req, res) => {
+		try {
+			const {
+				cookId,
+				category,
+				name,
+				description,
+				unitsPerQuantity,
+				price,
+				quantityLabel,
+				portionsTotal,
+				cookingDate,
+				pickupWindow,
+				deliveryRegions,
+			} = req.body;
+
+			if (!cookId || !category || !name || !price) {
+				return res
+					.status(400)
+					.json({ message: "cookId, category, name, and price are required" });
+			}
+
+			const cook = await CookProfile.findById(cookId);
+			if (!cook) return res.status(404).json({ message: "Cook not found" });
+
+			// Handle images
+			let images = [];
+			if (req.files && req.files.length > 0) {
+				for (const file of req.files) {
+					const result = await cloudinary.v2.uploader.upload(file.path, {
+						folder: "getameal/meals",
+					});
+					images.push({ url: result.secure_url, publicId: result.public_id });
+					fs.unlinkSync(file.path); // remove local file
+				}
+			}
+
+			// Handle deliveryRegions safely
+			let parsedDeliveryRegions = [];
+			if (deliveryRegions) {
+				if (typeof deliveryRegions === "string") {
+					try {
+						parsedDeliveryRegions = JSON.parse(deliveryRegions);
+						if (!Array.isArray(parsedDeliveryRegions))
+							parsedDeliveryRegions = [parsedDeliveryRegions];
+					} catch {
+						// fallback: split by comma if it's a comma-separated string
+						parsedDeliveryRegions = deliveryRegions
+							.split(",")
+							.map((s) => s.trim());
+					}
+				} else if (Array.isArray(deliveryRegions)) {
+					parsedDeliveryRegions = deliveryRegions;
+				}
+			}
+			// Create meal
+			const meal = new Meal({
+				cookId: cook._id,
+				category,
+				name,
+				description,
+				unitsPerQuantity: parseInt(unitsPerQuantity),
+				price: parseFloat(price),
+				quantityLabel,
+				portionsTotal: parseInt(portionsTotal),
+				portionsRemaining: parseInt(portionsTotal),
+				cookingDate: cookingDate ? new Date(cookingDate) : undefined,
+				pickupWindow,
+				deliveryRegions: parsedDeliveryRegions,
+				images,
+			});
+
+			await meal.save();
+
+			// Notify admin (or other admins)
+			await createAdminNotification({
+				title: "New Meal Created by Admin",
+				body: `Admin created a meal for cook ${cook.cookName}`,
+				type: "meal",
+				data: { mealId: meal._id, cookId: cook._id },
+			});
+
+			res
+				.status(201)
+				.json({ message: "Meal created successfully", meal, cookId: cook._id });
+		} catch (error) {
+			console.error("Admin create meal error:", error);
+			res.status(500).json({ message: "Server error", error: error.message });
+		}
+	},
+];

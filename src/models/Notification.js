@@ -6,8 +6,9 @@ const notificationSchema = new mongoose.Schema(
 		userId: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: "User",
-			required: true,
+			required: false, // ✅ change this
 			index: true,
+			default: null, // ✅ allow null
 		},
 		title: {
 			type: String,
@@ -20,7 +21,18 @@ const notificationSchema = new mongoose.Schema(
 		},
 		type: {
 			type: String,
-			enum: ["system", "transaction", "general"],
+			enum: [
+				"system",
+				"transaction",
+				"general",
+				"promotional",
+				"customer", // ✅ add
+				"cook", // ✅ add
+				"order", // ✅ add
+				"user", // ✅ add
+				"payment", // ✅ add
+				"withdrawal", // optional
+			],
 			default: "general",
 		},
 		targetId: {

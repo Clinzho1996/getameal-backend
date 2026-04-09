@@ -2,6 +2,7 @@ import { paystack } from "../config/paystack.js";
 import CookProfile from "../models/CookProfile.js";
 import PendingTransfer from "../models/PendingTransfer.js";
 import WalletTransaction from "../models/WalletTransaction.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 
 /**
  * Request payout
@@ -85,6 +86,13 @@ export const requestPayout = async (req, res) => {
 		return res.status(200).json({
 			message: "Payout request received and is being processed",
 			amount,
+		});
+
+		await createAdminNotification({
+			title: "Payout Requested",
+			body: `A new payout request has been submitted for ${req.user.fullName}`,
+			type: "cook",
+			data: { cookId: userId },
 		});
 	} catch (err) {
 		console.error(

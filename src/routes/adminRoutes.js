@@ -1,6 +1,10 @@
 import express from "express";
 import {
+	addOrUpdateZone,
+	addTeamMember,
 	cancelOrder,
+	getActiveSessions,
+	getAdminProfile,
 	getAllMainOrders,
 	getAllNotifications,
 	getAllOrders,
@@ -12,17 +16,24 @@ import {
 	getOverviewStats,
 	getSnapshot,
 	getSystemAlerts,
+	getTeamMembers,
+	getZones,
 	globalSearch,
 	issueRefund,
+	revokeSession,
+	updateAdminPassword,
+	updateAdminProfile,
 } from "../controllers/adminController.js";
 import {
 	addCookNote,
-	changeCookStatus,
+	adminCreateCook,
+	changeCookApprovalStatus,
 	creditCookWallet,
 	getAllCooks,
 	getCookById,
 	getCookStats,
 	messageCook,
+	suspendCook,
 } from "../controllers/adminCooksController.js";
 import {
 	getPaymentById,
@@ -38,6 +49,7 @@ import {
 	messageCustomer,
 	toggleCustomerStatus,
 } from "../controllers/CustomerController.js";
+import { adminCreateMeal } from "../controllers/mealController.js";
 import {
 	createNotification,
 	sendBulkNotification,
@@ -63,6 +75,7 @@ router.get("/cooks/stats", protect, adminOnly, getCookStats);
 
 // Fetch all cooks with filters
 router.get("/cooks", protect, adminOnly, getAllCooks);
+router.post("/meals/create", protect, adminOnly, adminCreateMeal);
 router.get("/notifications", protect, adminOnly, getAllNotifications);
 router.get("/snapshot", protect, adminOnly, getSnapshot);
 // Stats
@@ -76,12 +89,30 @@ router.post("/send-to-all", protect, adminOnly, sendPushToAllUsers);
 router.post("/create", protect, adminOnly, createNotification);
 router.post("/bulk", protect, adminOnly, sendBulkNotification);
 
+// Admin Profile
+router.get("/profile", protect, adminOnly, getAdminProfile);
+router.put("/profile", protect, adminOnly, updateAdminProfile);
+router.put("/profile/password", protect, adminOnly, updateAdminPassword);
+
+// Team
+router.post("/team", protect, adminOnly, addTeamMember);
+router.get("/team", protect, adminOnly, getTeamMembers);
+
+// Sessions
+router.get("/sessions", protect, adminOnly, getActiveSessions);
+router.delete("/sessions/:sessionId", protect, adminOnly, revokeSession);
+
+// Zones
+router.post("/zones", protect, adminOnly, addOrUpdateZone);
+router.get("/zones", protect, adminOnly, getZones);
+
 // Single payment
 router.get("/payments/:id", protect, adminOnly, getPaymentById);
 
 // Refund
 router.post("/payments/:id/refund", protect, adminOnly, refundPayment);
 
+router.post("/cooks/create", protect, adminOnly, adminCreateCook);
 // Fetch
 router.get("/cooks/:cookId", protect, adminOnly, getCookById);
 
@@ -92,7 +123,14 @@ router.post("/cooks/:cookId/message", protect, adminOnly, messageCook);
 	router.post("/cooks/:cookId/note", protect, adminOnly, addCookNote));
 
 // Change cook status
-router.post("/cooks/:cookId/status", protect, adminOnly, changeCookStatus);
+router.post(
+	"/cooks/:cookId/status",
+	protect,
+	adminOnly,
+	changeCookApprovalStatus,
+);
+
+router.post("/cooks/:cookId/suspend", protect, adminOnly, suspendCook);
 
 // Credit cook wallet
 router.post("/cooks/:cookId/credit", protect, adminOnly, creditCookWallet);

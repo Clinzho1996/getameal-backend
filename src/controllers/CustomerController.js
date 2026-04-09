@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 import { getResendInstance } from "../utils/emailService.js";
 
 // GET customers with filters and stats
@@ -199,6 +200,13 @@ export const creditCustomerWallet = async (req, res) => {
 		res
 			.status(200)
 			.json({ message: "Wallet credited", balance: user.walletBalance });
+
+		await createAdminNotification({
+			title: "Wallet Credited",
+			body: `The customer "${user.fullName}" has been credited with ${amount}`,
+			type: "customer",
+			data: { userId: req.user._id },
+		});
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ message: "Server error", error: error.message });

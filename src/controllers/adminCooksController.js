@@ -1,7 +1,9 @@
+import { nanoid } from "nanoid";
 import { Resend } from "resend";
 import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
+import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 
 // Helper for Resend
@@ -242,23 +244,78 @@ export const addCookNote = async (req, res) => {
 };
 
 // ------------------ Change status ------------------
-export const changeCookStatus = async (req, res) => {
+export const changeCookApprovalStatus = async (req, res) => {
 	try {
 		const { cookId } = req.params;
-		const { action } = req.body;
-		const cook = await CookProfile.findById(cookId);
+		const { action } = req.body; // setActive | setInactive
+
+		const cook = await CookProfile.findById(cookId).populate("userId");
 		if (!cook) return res.status(404).json({ message: "Cook not found" });
 
-		if (action === "suspend") cook.isAvailable = false;
-		else if (action === "activate") cook.isAvailable = true;
-		else if (action === "setActive") cook.isApproved = true;
+		if (action === "setActive") cook.isApproved = true;
 		else if (action === "setInactive") cook.isApproved = false;
 		else return res.status(400).json({ message: "Invalid action" });
 
 		await cook.save();
+
 		res.status(200).json({
-			message: `Cook ${action}`,
+			message: `Cook ${action === "setActive" ? "activated" : "deactivated"} successfully`,
 			status: cook.isApproved ? "approved" : "rejected",
+		});
+	} catch (error) {
+		console.error(error);
+		res.status(500).json({ message: "Server error", error: error.message });
+	}
+};
+
+// ===============================
+// SUSPEND / UNSUSPEND COOK
+// ===============================
+export const suspendCook = async (req, res) => {
+	const resend = getResendInstance();
+	try {
+		const { cookId } = req.params;
+		const { action, reason, note, notifyCook = true } = req.body;
+		// action: suspend | activate
+
+		const cook = await CookProfile.findById(cookId).populate("userId");
+		if (!cook) return res.status(404).json({ message: "Cook not found" });
+
+		if (action === "suspend") {
+			if (!reason)
+				return res.status(400).json({ message: "Reason is required" });
+			cook.isSuspended = true;
+			cook.suspensionReason = reason;
+			cook.suspensionNote = note || null;
+
+			// send email if notifyCook is true
+			if (notifyCook && cook.userId?.email) {
+				const subject = "Your account has been suspended";
+				const message = `<p>Your cooking account has been suspended for the following reason:</p>
+					<p><strong>${reason}</strong></p>
+					${note ? `<p>Note: ${note}</p>` : ""}
+					<p>Please contact support if you believe this is an error.</p>`;
+
+				await resend.emails.send({
+					from: process.env.EMAIL_FROM,
+					to: cook.userId.email,
+					subject,
+					html: `<h2>Hello ${cook.userId.fullName}</h2>${message}`,
+				});
+			}
+		} else if (action === "activate") {
+			cook.isSuspended = false;
+			cook.suspensionReason = null;
+			cook.suspensionNote = null;
+		} else {
+			return res.status(400).json({ message: "Invalid action" });
+		}
+
+		await cook.save();
+
+		res.status(200).json({
+			message: `Cook ${action} successfully`,
+			status: cook.isSuspended ? "suspended" : "active",
 		});
 	} catch (error) {
 		console.error(error);
@@ -286,14 +343,116 @@ export const creditCookWallet = async (req, res) => {
 			note,
 		});
 
-		
-
 		res.status(200).json({
 			message: "Cook wallet credited",
 			walletBalance: cook.walletBalance,
 		});
 	} catch (error) {
 		console.error(error);
+		res.status(500).json({ message: "Server error", error: error.message });
+	}
+};
+
+export const adminCreateCook = async (req, res) => {
+	const resend = getResendInstance();
+
+	try {
+		const {
+			email,
+			fullName,
+			phone,
+			address,
+			experience,
+			startImmediately = true,
+			availableDate,
+			latitude,
+			longitude,
+			referralCode,
+			notifyUser = true,
+		} = req.body;
+
+		if (!email || !fullName || !phone || !address || !experience) {
+			return res.status(400).json({
+				message: "Email, full name, phone, address and experience are required",
+			});
+		}
+
+		// Check if user exists
+		let user = await User.findOne({ email });
+		let plainPassword = nanoid(10); // always generate a password
+
+		if (!user) {
+			// Create a new user
+			user = await User.create({
+				email,
+				fullName,
+				phone,
+				password: plainPassword,
+				role: "user",
+				isCook: true,
+			});
+		} else {
+			// Update existing user to isCook and reset password
+			user.isCook = true;
+			user.password = plainPassword; // temporary password
+			await user.save();
+		}
+
+		// Create or update cook profile
+		let cookProfile = await CookProfile.findOne({ userId: user._id });
+		if (!cookProfile) {
+			cookProfile = await CookProfile.create({
+				userId: user._id,
+				cookName: fullName,
+				phone,
+				cookAddress: address,
+				cookingExperience: experience,
+				availablePickup: true,
+				schedule: startImmediately
+					? ["Immediate"]
+					: availableDate
+						? [availableDate]
+						: [],
+				isApproved: true,
+				isAvailable: true,
+				location:
+					latitude && longitude
+						? {
+								type: "Point",
+								coordinates: [parseFloat(longitude), parseFloat(latitude)],
+								address,
+							}
+						: undefined,
+				availableForCooking: startImmediately ? new Date() : availableDate,
+			});
+		}
+
+		// Send email to user if notifyUser
+		if (notifyUser) {
+			const subject = "Your Cook Profile Has Been Created!";
+			const message = `
+        <p>Hello ${fullName},</p>
+        <p>Your cook profile has been created by admin.</p>
+        <p>Your login password: <strong>${plainPassword}</strong></p>
+        <p>Address: ${address}</p>
+        <p>Experience: ${experience}</p>
+      `;
+
+			await resend.emails.send({
+				from: process.env.EMAIL_FROM,
+				to: email,
+				subject,
+				html: message,
+			});
+		}
+
+		res.status(201).json({
+			message: "Cook profile created successfully",
+			user: { id: user._id, email: user.email, fullName: user.fullName },
+			cookProfile,
+		});
+	} catch (error) {
+		console.error("Admin create cook error:", error);
 		res.status(500).json({ message: "Server error", error: error.message });
 	}
 };

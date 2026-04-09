@@ -4,6 +4,7 @@ import Cart from "../models/Cart.js";
 import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
 import User from "../models/User.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
 dotenv.config();
 
 // Configure Cloudinary
@@ -41,6 +42,13 @@ export const deleteAccount = async (req, res) => {
 
 		await user.deleteOne();
 		res.json({ message: "Account deleted successfully" });
+
+		await createAdminNotification({
+			title: "Account Deleted",
+			body: `The account for ${user.fullName} has been deleted`,
+			type: "user",
+			data: { userId: user._id },
+		});
 	} catch (error) {
 		res.status(500).json({ message: error.message });
 	}

@@ -5,7 +5,17 @@ const userSchema = new mongoose.Schema(
 		email: { type: String, unique: true },
 		fullName: String, // user's real name
 		phone: String,
-		role: { type: String, enum: ["user", "admin"], default: "user" }, // remove 'cook' from enum
+		role: {
+			type: String,
+			enum: [
+				"user",
+				"admin",
+				"operations agent",
+				"operations manager",
+				"customer support",
+			],
+			default: "user",
+		}, // remove 'cook' from enum
 		isCook: { type: Boolean, default: false }, // true if the user has a cook profile
 		bio: String,
 		profileImage: Object,
@@ -30,6 +40,9 @@ const userSchema = new mongoose.Schema(
 				},
 			],
 			default: [],
+		},
+		zone: {
+			type: String, // e.g. "lekki", "ikeja"
 		},
 		notificationSettings: {
 			push_enabled: { type: Boolean, default: true },

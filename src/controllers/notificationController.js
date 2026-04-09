@@ -358,11 +358,7 @@ export const sendPushToAllUsers = async (req, res) => {
 		}
 
 		// Use valid enum values from your model
-		const validTypes = [
-			"system",
-			"transaction",
-			"general",
-		];
+		const validTypes = ["system", "transaction", "general"];
 		const notificationType = validTypes.includes(type) ? type : "system";
 
 		// Find all users (not just those with push tokens) - so everyone gets notification in app
@@ -423,48 +419,92 @@ export const sendPushToAllUsers = async (req, res) => {
 // ===============================
 export const sendBulkNotification = async (req, res) => {
 	try {
-		const { title, body, type, data, userFilter = {} } = req.body;
+		const {
+			title,
+			body,
+			type = "system",
+			target = "all",
+			userIds = [],
+			zones = [],
+			data = {},
+			pushOnly = false,
+		} = req.body;
 
 		if (!title || !body) {
 			return res.status(400).json({ error: "Title and body are required" });
 		}
 
-		// Find users based on filter
-		const users = await User.find({
-			...userFilter,
-			"notificationSettings.push_enabled": true,
-		});
+		let query = {};
 
-		const notifications = [];
-		const pushTokens = [];
-
-		for (const user of users) {
-			// Create notification record
-			const notification = await Notification.create({
-				userId: user._id,
-				title,
-				body,
-				type: type || "system",
-				data: data || {},
-			});
-			notifications.push(notification);
-
-			// Collect push tokens safely
-			if (user.pushTokens && user.pushTokens.length > 0) {
-				pushTokens.push(...user.pushTokens.map((t) => t.token));
-			}
+		switch (target) {
+			case "customers":
+				query.role = "user";
+				query.isCook = false;
+				break;
+			case "cooks":
+				query.isCook = true;
+				break;
+			case "admins":
+				query.role = "admin";
+				break;
+			case "specific":
+				if (!userIds.length) {
+					return res
+						.status(400)
+						.json({ error: "userIds required for specific target" });
+				}
+				query._id = { $in: userIds };
+				break;
+			case "all":
+			default:
+				// no role filter
+				break;
 		}
 
-		// Send push notifications
-		if (pushTokens.length > 0) {
-			await sendPush(pushTokens, {
-				title,
-				body,
-				data: {
-					type,
-					...data,
-				},
+		// ===============================
+		// APPLY ZONES FILTER IF PROVIDED
+		// ===============================
+		if (zones.length) {
+			query["location.address"] = {
+				$regex: zones.map((z) => z.trim()).join("|"),
+				$options: "i",
+			};
+		}
+
+		if (pushOnly) {
+			query["notificationSettings.push_enabled"] = true;
+		}
+
+		console.log("FINAL QUERY:", JSON.stringify(query, null, 2));
+
+		const users = await User.find(query);
+
+		if (!users.length) {
+			return res.status(200).json({
+				success: true,
+				message: "No users found for this target",
+				count: 0,
 			});
+		}
+
+		const notificationDocs = users.map((user) => ({
+			userId: user._id,
+			title,
+			body,
+			type,
+			data,
+		}));
+
+		await Notification.insertMany(notificationDocs);
+
+		const pushTokens = users.flatMap(
+			(user) => user.pushTokens?.map((t) => t.token) || [],
+		);
+
+		const chunkSize = 100;
+		for (let i = 0; i < pushTokens.length; i += chunkSize) {
+			const chunk = pushTokens.slice(i, i + chunkSize);
+			await sendPush(chunk, { title, body, data: { type, ...data } });
 		}
 
 		res.status(201).json({
