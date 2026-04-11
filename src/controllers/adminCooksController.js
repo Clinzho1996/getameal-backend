@@ -158,7 +158,7 @@ export const getCookById = async (req, res) => {
 		// Get the cook profile and populate user info
 		const cook = await CookProfile.findById(cookId).populate(
 			"userId",
-			"fullName email phone profileImage",
+			"fullName email phone profileImage isSuspended suspensionReason suspensionNote",
 		);
 
 		if (!cook) {

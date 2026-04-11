@@ -41,6 +41,15 @@ const userSchema = new mongoose.Schema(
 			],
 			default: [],
 		},
+		notes: {
+			type: [
+				{
+					note: String,
+					createdAt: { type: Date, default: Date.now },
+				},
+			],
+			default: [],
+		},
 		zone: {
 			type: String, // e.g. "lekki", "ikeja"
 		},

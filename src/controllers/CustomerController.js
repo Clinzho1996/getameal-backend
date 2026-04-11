@@ -52,7 +52,12 @@ export const getCustomers = async (req, res) => {
 					joinedAt: user.createdAt,
 					lastActive: lastOrder ? lastOrder.updatedAt : null,
 					ordersCount: orders.length,
-					notes: user.notes || [],
+					notes: Array.isArray(user.notes)
+						? user.notes.map((n) => ({
+								note: n.note,
+								createdAt: n.createdAt,
+							}))
+						: [],
 				};
 			}),
 		);
@@ -139,16 +144,36 @@ export const addCustomerNote = async (req, res) => {
 		const { userId } = req.params;
 		const { note } = req.body;
 
-		const user = await User.findById(userId);
-		if (!user) return res.status(404).json({ message: "User not found" });
+		if (!note) {
+			return res.status(400).json({ message: "Note is required" });
+		}
 
-		user.notes = user.notes || [];
-		user.notes.push({ note, createdAt: new Date() });
-		await user.save();
+		const user = await User.findByIdAndUpdate(
+			userId,
+			{
+				$push: {
+					notes: {
+						note,
+						createdAt: new Date(),
+					},
+				},
+			},
+			{ new: true },
+		);
 
-		res.status(200).json({ message: "Note added", notes: user.notes });
+		if (!user) {
+			return res.status(404).json({ message: "User not found" });
+		}
+
+		return res.status(200).json({
+			message: "Note added",
+			notes: user.notes,
+		});
 	} catch (error) {
-		res.status(500).json({ message: "Server error", error: error.message });
+		return res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
 	}
 };
 
