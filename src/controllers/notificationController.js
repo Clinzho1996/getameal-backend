@@ -2,6 +2,7 @@
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import { sendPush } from "../services/pushService.js";
+import { getResendInstance } from "../utils/emailService.js";
 
 // ===============================
 // GET USER NOTIFICATIONS
@@ -292,29 +293,59 @@ export const getNotificationSettings = async (req, res) => {
 // CREATE NOTIFICATION (Admin/System)
 // ===============================
 export const createNotification = async (req, res) => {
-	try {
-		const { userId, title, body, type, data, sendPush = true } = req.body;
+	const resend = getResendInstance();
 
+	try {
+		const {
+			userId,
+			title,
+			body,
+			type = "system",
+			data = {},
+			sendPush = true,
+			sendEmail = false,
+		} = req.body;
+
+		// ===============================
+		// VALIDATION
+		// ===============================
 		if (!userId || !title || !body) {
-			return res.status(400).json({ error: "Missing required fields" });
+			return res.status(400).json({
+				error: "Missing required fields",
+			});
 		}
 
+		// ===============================
+		// CREATE NOTIFICATION
+		// ===============================
 		const notification = await Notification.create({
 			userId,
 			title,
 			body,
-			type: type || "system",
-			data: data || {},
+			type,
+			data,
 			created_at: new Date(),
 		});
 
-		// Send push notification if enabled
-		if (sendPush) {
-			const user = await User.findById(userId);
-			if (user && user.notificationSettings?.push_enabled !== false) {
-				// Safely get tokens
-				const tokens = user.pushTokens?.map((t) => t.token) || [];
-				if (tokens.length > 0) {
+		// ===============================
+		// FETCH USER
+		// ===============================
+		const user = await User.findById(userId);
+
+		if (!user) {
+			return res.status(404).json({
+				error: "User not found",
+			});
+		}
+
+		// ===============================
+		// SEND PUSH
+		// ===============================
+		if (sendPush && user.notificationSettings?.push_enabled !== false) {
+			const tokens = user.pushTokens?.map((t) => t.token) || [];
+
+			if (tokens.length > 0) {
+				try {
 					await sendPush(tokens, {
 						title,
 						body,
@@ -324,19 +355,49 @@ export const createNotification = async (req, res) => {
 							...data,
 						},
 					});
+
 					notification.is_push_sent = true;
 					await notification.save();
+				} catch (err) {
+					console.error("Push send failed:", err.message);
 				}
 			}
 		}
 
-		res.status(201).json({
+		// ===============================
+		// SEND EMAIL
+		// ===============================
+		if (sendEmail && user.email) {
+			try {
+				await resend.emails.send({
+					from: process.env.EMAIL_FROM,
+					to: user.email,
+					subject: title,
+					html: `
+						<h2>${title}</h2>
+						<p>${body}</p>
+					`,
+				});
+
+				notification.is_email_sent = true;
+				await notification.save();
+			} catch (err) {
+				console.error("Email send failed:", err.message);
+			}
+		}
+
+		// ===============================
+		// RESPONSE
+		// ===============================
+		return res.status(201).json({
 			success: true,
 			data: notification,
 		});
 	} catch (err) {
 		console.error("Create notification error:", err);
-		res.status(500).json({ error: err.message });
+		return res.status(500).json({
+			error: err.message,
+		});
 	}
 };
 
@@ -347,6 +408,7 @@ export const createNotification = async (req, res) => {
 // ===============================
 // backend/controllers/notificationController.js
 export const sendPushToAllUsers = async (req, res) => {
+	const resend = getResendInstance();
 	try {
 		const { title, body, type, data } = req.body;
 
@@ -418,6 +480,8 @@ export const sendPushToAllUsers = async (req, res) => {
 // SEND BULK NOTIFICATION (Admin)
 // ===============================
 export const sendBulkNotification = async (req, res) => {
+	const resend = getResendInstance();
+
 	try {
 		const {
 			title,
@@ -430,39 +494,50 @@ export const sendBulkNotification = async (req, res) => {
 			pushOnly = false,
 		} = req.body;
 
+		// ===============================
+		// VALIDATION
+		// ===============================
 		if (!title || !body) {
-			return res.status(400).json({ error: "Title and body are required" });
+			return res.status(400).json({
+				error: "Title and body are required",
+			});
 		}
 
+		// ===============================
+		// BUILD QUERY
+		// ===============================
 		let query = {};
 
 		switch (target) {
 			case "customers":
 				query.role = "user";
-				query.isCook = false;
+				query.$or = [{ isCook: false }, { isCook: { $exists: false } }];
 				break;
+
 			case "cooks":
 				query.isCook = true;
 				break;
+
 			case "admins":
 				query.role = "admin";
 				break;
+
 			case "specific":
 				if (!userIds.length) {
-					return res
-						.status(400)
-						.json({ error: "userIds required for specific target" });
+					return res.status(400).json({
+						error: "userIds required for specific target",
+					});
 				}
 				query._id = { $in: userIds };
 				break;
+
 			case "all":
 			default:
-				// no role filter
 				break;
 		}
 
 		// ===============================
-		// APPLY ZONES FILTER IF PROVIDED
+		// ZONE FILTER
 		// ===============================
 		if (zones.length) {
 			query["location.address"] = {
@@ -471,12 +546,18 @@ export const sendBulkNotification = async (req, res) => {
 			};
 		}
 
+		// ===============================
+		// PUSH SETTINGS FILTER
+		// ===============================
 		if (pushOnly) {
 			query["notificationSettings.push_enabled"] = true;
 		}
 
 		console.log("FINAL QUERY:", JSON.stringify(query, null, 2));
 
+		// ===============================
+		// FETCH USERS
+		// ===============================
 		const users = await User.find(query);
 
 		if (!users.length) {
@@ -487,6 +568,9 @@ export const sendBulkNotification = async (req, res) => {
 			});
 		}
 
+		// ===============================
+		// SAVE NOTIFICATIONS
+		// ===============================
 		const notificationDocs = users.map((user) => ({
 			userId: user._id,
 			title,
@@ -497,23 +581,72 @@ export const sendBulkNotification = async (req, res) => {
 
 		await Notification.insertMany(notificationDocs);
 
+		// ===============================
+		// PREPARE PUSH TOKENS
+		// ===============================
 		const pushTokens = users.flatMap(
 			(user) => user.pushTokens?.map((t) => t.token) || [],
 		);
 
-		const chunkSize = 100;
-		for (let i = 0; i < pushTokens.length; i += chunkSize) {
-			const chunk = pushTokens.slice(i, i + chunkSize);
-			await sendPush(chunk, { title, body, data: { type, ...data } });
+		// ===============================
+		// SEND PUSH (BATCHED)
+		// ===============================
+		const pushChunkSize = 100;
+
+		for (let i = 0; i < pushTokens.length; i += pushChunkSize) {
+			const chunk = pushTokens.slice(i, i + pushChunkSize);
+
+			try {
+				await sendPush(chunk, {
+					title,
+					body,
+					data: { type, ...data },
+				});
+			} catch (err) {
+				console.error("Push batch failed:", err.message);
+			}
 		}
 
-		res.status(201).json({
+		// ===============================
+		// SEND EMAIL (ONLY IF NOT PUSH ONLY)
+		// ===============================
+		if (!pushOnly) {
+			const emails = users.map((u) => u.email).filter(Boolean);
+
+			const emailChunkSize = 50;
+
+			for (let i = 0; i < emails.length; i += emailChunkSize) {
+				const chunk = emails.slice(i, i + emailChunkSize);
+
+				try {
+					await resend.emails.send({
+						from: process.env.EMAIL_FROM,
+						to: chunk,
+						subject: title,
+						html: `
+							<h2>${title}</h2>
+							<p>${body}</p>
+						`,
+					});
+				} catch (err) {
+					console.error("Email batch failed:", err.message);
+				}
+			}
+		}
+
+		// ===============================
+		// RESPONSE
+		// ===============================
+		return res.status(201).json({
 			success: true,
-			message: `Sent to ${users.length} users`,
+			message: `Notification sent to ${users.length} users`,
 			count: users.length,
+			pushCount: pushTokens.length,
 		});
 	} catch (err) {
 		console.error("Bulk notification error:", err);
-		res.status(500).json({ error: err.message });
+		return res.status(500).json({
+			error: err.message,
+		});
 	}
 };

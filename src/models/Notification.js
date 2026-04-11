@@ -26,12 +26,12 @@ const notificationSchema = new mongoose.Schema(
 				"transaction",
 				"general",
 				"promotional",
-				"customer", // ✅ add
-				"cook", // ✅ add
-				"order", // ✅ add
-				"user", // ✅ add
-				"payment", // ✅ add
-				"withdrawal", // optional
+				"customer", 
+				"cook", 
+				"order", 
+				"user", 
+				"payment",
+				"withdrawal",
 			],
 			default: "general",
 		},

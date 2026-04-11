@@ -20,6 +20,8 @@ import {
 	getZones,
 	globalSearch,
 	issueRefund,
+	markAllNotificationsAsRead,
+	markNotificationAsRead,
 	revokeSession,
 	updateAdminPassword,
 	updateAdminProfile,
@@ -105,6 +107,19 @@ router.delete("/sessions/:sessionId", protect, adminOnly, revokeSession);
 // Zones
 router.post("/zones", protect, adminOnly, addOrUpdateZone);
 router.get("/zones", protect, adminOnly, getZones);
+
+router.patch(
+	"/notifications/read-all",
+	protect,
+	adminOnly,
+	markAllNotificationsAsRead,
+);
+router.patch(
+	"/notifications/:id/read",
+	protect,
+	adminOnly,
+	markNotificationAsRead,
+);
 
 // Single payment
 router.get("/payments/:id", protect, adminOnly, getPaymentById);

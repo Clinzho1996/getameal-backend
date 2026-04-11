@@ -849,34 +849,108 @@ export const globalSearch = async (req, res) => {
 
 export const getAllNotifications = async (req, res) => {
 	try {
-		// Optional: Add pagination
 		const page = parseInt(req.query.page) || 1;
 		const limit = parseInt(req.query.limit) || 50;
 		const skip = (page - 1) * limit;
 
-		// Fetch notifications sorted by latest first
-		const notifications = await Notification.find({ userId: null })
+		const { unreadOnly } = req.query;
+
+		// ===============================
+		// BUILD FILTER
+		// ===============================
+		let filter = { userId: null }; // system/admin notifications
+
+		if (unreadOnly === "true") {
+			filter.isRead = false;
+		}
+
+		// ===============================
+		// FETCH DATA
+		// ===============================
+		const notifications = await Notification.find(filter)
 			.sort({ createdAt: -1 })
 			.skip(skip)
 			.limit(limit)
-			.populate("userId", "fullName email role") // User who triggered action
-			.populate("targetId") // Could be order, meal, cook, review, payment, etc.
+			.populate("userId", "fullName email role")
+			.populate("targetId")
 			.lean();
 
-		// Optional: total count for frontend pagination
-		const totalCount = await Notification.countDocuments({});
+		const totalCount = await Notification.countDocuments(filter);
 
-		res.json({
+		return res.json({
 			page,
 			limit,
 			totalCount,
+			unreadCount: await Notification.countDocuments({
+				...filter,
+				isRead: false,
+			}),
 			notifications,
 		});
 	} catch (error) {
 		console.error("Error fetching notifications:", error);
-		res
-			.status(500)
-			.json({ message: "Failed to fetch notifications", error: error.message });
+		return res.status(500).json({
+			message: "Failed to fetch notifications",
+			error: error.message,
+		});
+	}
+};
+
+export const markNotificationAsRead = async (req, res) => {
+	try {
+		const { id } = req.params;
+
+		const notification = await Notification.findByIdAndUpdate(
+			id,
+			{
+				isRead: true,
+				readAt: new Date(),
+			},
+			{ new: true },
+		);
+
+		if (!notification) {
+			return res.status(404).json({
+				error: "Notification not found",
+			});
+		}
+
+		return res.json({
+			success: true,
+			data: notification,
+		});
+	} catch (error) {
+		console.error("Mark read error:", error);
+		return res.status(500).json({
+			error: error.message,
+		});
+	}
+};
+
+export const markAllNotificationsAsRead = async (req, res) => {
+	try {
+		const result = await Notification.updateMany(
+			{
+				userId: null,
+				isRead: false,
+			},
+			{
+				$set: {
+					isRead: true,
+					readAt: new Date(),
+				},
+			},
+		);
+
+		return res.json({
+			success: true,
+			modifiedCount: result.modifiedCount,
+		});
+	} catch (error) {
+		console.error("Mark all read error:", error);
+		return res.status(500).json({
+			error: error.message,
+		});
 	}
 };
 
