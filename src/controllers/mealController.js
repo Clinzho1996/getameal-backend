@@ -124,19 +124,51 @@ export const updateMeal = async (req, res) => {
 		if (!meal) return res.status(404).json({ message: "Meal not found" });
 
 		if (meal.cookId.toString() !== req.user._id.toString()) {
-			return res
-				.status(403)
-				.json({ message: "Not authorized to update this meal" });
+			return res.status(403).json({ message: "Not authorized" });
 		}
 
+		// ===== HANDLE IMAGE REPLACEMENT =====
+		if (req.files && req.files.length > 0) {
+			// 1. Delete old images from Cloudinary
+			if (meal.images && meal.images.length > 0) {
+				for (const img of meal.images) {
+					if (img.publicId) {
+						await cloudinary.v2.uploader.destroy(img.publicId);
+					}
+				}
+			}
+
+			// 2. Upload new images
+			let newImages = [];
+			for (const file of req.files) {
+				const result = await cloudinary.v2.uploader.upload(file.path, {
+					folder: "getameal/meals",
+				});
+
+				newImages.push({
+					url: result.secure_url,
+					publicId: result.public_id,
+				});
+
+				fs.unlinkSync(file.path);
+			}
+
+			// 3. Replace images array
+			meal.images = newImages;
+		}
+
+		// ===== UPDATE OTHER FIELDS =====
 		Object.assign(meal, req.body);
 
+		// ===== PORTION LOGIC =====
 		if (
 			req.body.portionsTotal &&
 			req.body.portionsTotal < meal.portionsRemaining
 		) {
 			meal.portionsRemaining = req.body.portionsTotal;
 		}
+
+		await meal.save();
 
 		await createAdminNotification({
 			title: "Meal Updated",
@@ -145,9 +177,9 @@ export const updateMeal = async (req, res) => {
 			data: { mealId: meal._id },
 		});
 
-		await meal.save();
 		res.json({ message: "Meal updated", meal });
 	} catch (error) {
+		console.error(error);
 		res.status(500).json({ message: error.message });
 	}
 };
