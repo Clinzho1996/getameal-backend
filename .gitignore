@@ -6,3 +6,4 @@ node_modules
 simulatePaystackWebhook.js
 fixCookUsers.js
 fixCookLocation.js
+google-services.json

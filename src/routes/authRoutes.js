@@ -9,6 +9,7 @@ import {
 	signupComplete,
 	signupInit,
 	signupVerify,
+	socialAuth,
 } from "../controllers/authController.js";
 
 const router = express.Router();
@@ -26,5 +27,6 @@ router.post("/admin/reset-password", adminResetPassword);
 // Login
 router.post("/login/init", loginInit);
 router.post("/login/verify", loginVerify);
+router.post("/social-auth", socialAuth);
 
 export default router;

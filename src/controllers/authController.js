@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import CookProfile from "../models/CookProfile.js";
 import OTP from "../models/OTP.js";
 import User from "../models/User.js";
+import { verifyFirebaseToken } from "../services/firebaseService.js";
 import { sendOTPEmail } from "../utils/emailService.js";
 import { generateOTP } from "../utils/generateOtp.js";
 import { generateToken } from "../utils/jwt.js";
@@ -343,6 +344,97 @@ export const loginVerify = async (req, res) => {
 		res.status(500).json({
 			message: "Server error",
 			error: error.message,
+		});
+	}
+};
+
+export const socialAuth = async (req, res) => {
+	try {
+		const { idToken, name, email, appleUserId } = req.body;
+
+		if (!idToken) {
+			return res.status(400).json({
+				success: false,
+				message: "Token required",
+			});
+		}
+
+		const decoded = await verifyFirebaseToken(idToken);
+		const { uid, email: fbEmail, firebase } = decoded;
+
+		const userEmail = email || fbEmail;
+		const provider = firebase?.sign_in_provider || "google.com";
+
+		// Try to find existing user by various methods
+		let user = await User.findOne({ firebaseUid: uid });
+
+		if (!user && appleUserId) {
+			user = await User.findOne({ appleUserId });
+		}
+
+		if (!user && userEmail) {
+			user = await User.findOne({ email: userEmail });
+		}
+
+		// If user exists, update their info and return
+		if (user) {
+			// Update any missing fields
+			if (!user.firebaseUid && uid) user.firebaseUid = uid;
+			if (!user.fullName && name) user.fullName = name;
+			if (appleUserId && !user.appleUserId) user.appleUserId = appleUserId;
+			if (!user.provider) user.provider = provider;
+
+			await user.save();
+
+			const token = generateToken(user._id);
+
+			return res.status(200).json({
+				success: true,
+				token,
+				user,
+			});
+		}
+
+		// If no user exists, create a new one
+		user = await User.create({
+			fullName: name || userEmail.split("@")[0],
+			email: userEmail,
+			firebaseUid: uid,
+			appleUserId: appleUserId || undefined,
+			provider,
+			isVerified: true,
+		});
+
+		const token = generateToken(user._id);
+
+		return res.status(200).json({
+			success: true,
+			token,
+			user,
+		});
+	} catch (error) {
+		// Handle duplicate key error specifically
+		if (error.code === 11000) {
+			// Try to find and return the existing user
+			try {
+				const existingUser = await User.findOne({ email: req.body.email });
+				if (existingUser) {
+					const token = generateToken(existingUser._id);
+					return res.status(200).json({
+						success: true,
+						token,
+						user: existingUser,
+						message: "Existing user logged in",
+					});
+				}
+			} catch (findError) {
+				console.error("Error finding existing user:", findError);
+			}
+		}
+
+		return res.status(500).json({
+			success: false,
+			message: error.message,
 		});
 	}
 };
