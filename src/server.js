@@ -34,12 +34,6 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
-// Add this endpoint BEFORE your routes
-// In your main server file (server.js, app.js, or index.js)
-
-// Your existing Firebase initialization
-// Make sure admin is initialized before this endpoint
-
 // ADD THIS ENDPOINT
 app.post("/api/generate-custom-token", async (req, res) => {
 	try {
