@@ -21,9 +21,11 @@ const userSchema = new mongoose.Schema(
 		profileImage: Object,
 		coverImage: Object,
 		location: {
-			type: { type: String, enum: ["Point"] },
+			type: { type: String, enum: ["Point"], default: "Point" },
 			coordinates: [Number],
 			address: String,
+			state: String, // "Lagos", "Abuja", "Rivers"
+			region: String, // "island", "mainland", "abuja", etc.
 		},
 		// Add fields for referral
 		referralCode: { type: String, unique: true, sparse: true },

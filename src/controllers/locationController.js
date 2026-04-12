@@ -164,14 +164,9 @@ export const getNearbyCooks = async (req, res) => {
 
 		const searchRadius = radius ? parseInt(radius) : 5000;
 
-		console.log(
-			`Searching for cooks near [${latitude}, ${longitude}] within ${searchRadius} meters`,
-		);
-
-		// Query cooks with geocoded locations
-		const cooks = await User.find({
-			isCook: true, // support isCook flag
-			"location.coordinates": { $exists: true },
+		// ===== 1. NEARBY =====
+		let cooks = await User.find({
+			isCook: true,
 			location: {
 				$near: {
 					$geometry: {
@@ -183,16 +178,40 @@ export const getNearbyCooks = async (req, res) => {
 			},
 		}).select("-walletBalance -payoutBank");
 
-		console.log(`Found ${cooks.length} cooks`);
+		// ===== Get user location info (you must pass this from frontend or reverse geocode) =====
+		const userState = req.query.state;
+		const userRegion = req.query.region;
 
-		res.status(200).json({
+		// ===== 2. REGION FALLBACK =====
+		if (cooks.length === 0 && userRegion) {
+			cooks = await User.find({
+				isCook: true,
+				"location.region": userRegion.toLowerCase(),
+			}).select("-walletBalance -payoutBank");
+		}
+
+		// ===== 3. STATE FALLBACK =====
+		if (cooks.length === 0 && userState) {
+			cooks = await User.find({
+				isCook: true,
+				"location.state": userState,
+			}).select("-walletBalance -payoutBank");
+		}
+
+		// ===== 4. LAST RESORT =====
+		if (cooks.length === 0) {
+			cooks = await User.find({ isCook: true })
+				.limit(20)
+				.select("-walletBalance -payoutBank");
+		}
+
+		res.json({
 			count: cooks.length,
 			cooks,
 		});
 	} catch (error) {
-		console.error(error);
 		res.status(500).json({
-			message: "Failed to fetch nearby cooks",
+			message: "Failed to fetch cooks",
 			error: error.message,
 		});
 	}
