@@ -335,9 +335,19 @@ export const cancelOrder = async (orderId) => {
 
 // Get orders for logged-in user
 export const getMyOrders = async (req, res) => {
-	const orders = await Order.find({ userId: req.user._id })
+	console.log("USER OBJECT:", req.user);
+
+	const userId = req.user._id || req.user.id;
+
+	console.log("RESOLVED USER ID:", userId);
+
+	const orders = await Order.find({ userId })
 		.populate("mealItems.mealId")
-		.populate("cookId");
+		.populate("cookId")
+		.sort({ createdAt: -1 });
+
+	console.log("FOUND ORDERS:", orders.length);
+
 	res.json(orders);
 };
 
