@@ -32,25 +32,55 @@ export const updateProfile = async (req, res) => {
 // Delete account (user or cook)
 export const deleteAccount = async (req, res) => {
 	try {
-		const user = await User.findById(req.user._id);
-		if (!user) return res.status(404).json({ message: "User not found" });
+		const userId = req.user._id;
 
-		// Remove all meals if cook
-		if (user.role === "cook") {
-			await Meal.deleteMany({ cookId: user._id });
+		const user = await User.findById(userId);
+		if (!user) {
+			return res.status(404).json({ message: "User not found" });
 		}
 
-		await user.deleteOne();
-		res.json({ message: "Account deleted successfully" });
+		// 1. Delete cook profile (if exists)
+		await CookProfile.deleteOne({ userId });
 
-		await createAdminNotification({
+		// 2. Delete meals created by this user (if your Meal model uses cookId)
+		await Meal.deleteMany({ cookId: userId });
+
+		// 3. Remove user references from other users
+		await User.updateMany(
+			{},
+			{
+				$pull: {
+					savedCooks: userId,
+					favorites: userId,
+				},
+			},
+		);
+
+		// 4. Delete related domain data (IMPORTANT — adjust based on your system)
+		await Promise.all([
+			Order.deleteMany({ userId }),
+			Order.deleteMany({ cookId: userId }),
+			Review.deleteMany({ userId }),
+			Notification.deleteMany({ userId }),
+			Transaction.deleteMany({ userId }),
+		]);
+
+		// 5. Finally delete the user
+		await User.deleteOne({ _id: userId });
+
+		// 6. Admin notification (do AFTER deletion but don’t block response)
+		createAdminNotification({
 			title: "Account Deleted",
 			body: `The account for ${user.fullName} has been deleted`,
 			type: "user",
-			data: { userId: user._id },
+			data: { userId },
+		}).catch(console.error);
+
+		return res.json({
+			message: "Account and all related data deleted successfully",
 		});
 	} catch (error) {
-		res.status(500).json({ message: error.message });
+		return res.status(500).json({ message: error.message });
 	}
 };
 
