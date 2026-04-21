@@ -3,6 +3,9 @@ import dotenv from "dotenv";
 import Cart from "../models/Cart.js";
 import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
+import Notification from "../models/Notification.js";
+import Order from "../models/Order.js";
+import Review from "../models/Review.js";
 import User from "../models/User.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
 dotenv.config();
@@ -33,19 +36,36 @@ export const updateProfile = async (req, res) => {
 export const deleteAccount = async (req, res) => {
 	try {
 		const userId = req.user._id;
+		const { reason } = req.body;
+
+		if (!reason) {
+			return res.status(400).json({
+				message: "Deletion reason is required",
+			});
+		}
 
 		const user = await User.findById(userId);
 		if (!user) {
 			return res.status(404).json({ message: "User not found" });
 		}
 
-		// 1. Delete cook profile (if exists)
+		// OPTIONAL: fetch cook profile for payout logic
+		const cookProfile = await CookProfile.findOne({ userId });
+
+		// 🚨 0. Business Rule Checks
+		if (cookProfile && cookProfile.walletBalance > 0) {
+			return res.status(400).json({
+				message: "Please withdraw your wallet balance before deleting account",
+			});
+		}
+
+		// 1. Delete cook profile
 		await CookProfile.deleteOne({ userId });
 
-		// 2. Delete meals created by this user (if your Meal model uses cookId)
+		// 2. Delete meals
 		await Meal.deleteMany({ cookId: userId });
 
-		// 3. Remove user references from other users
+		// 3. Remove references
 		await User.updateMany(
 			{},
 			{
@@ -56,28 +76,43 @@ export const deleteAccount = async (req, res) => {
 			},
 		);
 
-		// 4. Delete related domain data (IMPORTANT — adjust based on your system)
+		// 4. Delete related data
 		await Promise.all([
 			Order.deleteMany({ userId }),
 			Order.deleteMany({ cookId: userId }),
+			Cart.deleteMany({ userId }),
 			Review.deleteMany({ userId }),
 			Notification.deleteMany({ userId }),
-			Transaction.deleteMany({ userId }),
+			Notification.deleteMany({ "data.cookId": userId }),
+			Notification.deleteMany({ "data.userId": userId }),
 		]);
 
-		// 5. Finally delete the user
+		// 6. Delete user
 		await User.deleteOne({ _id: userId });
 
-		// 6. Admin notification (do AFTER deletion but don’t block response)
+		// 7. Admin notification (async)
 		createAdminNotification({
 			title: "Account Deleted",
-			body: `The account for ${user.fullName} has been deleted`,
+			body: `${user.fullName} deleted account. Reason: ${reason}`,
 			type: "user",
 			data: { userId },
 		}).catch(console.error);
 
+		// 8. Paystack payload (if needed for refund/payout tracking)
+		const paystackPayload = {
+			reference: `acct_delete_${userId}_${Date.now()}`,
+			email: user.email,
+			amount: 0, // set if refunding (kobo)
+			metadata: {
+				userId: userId.toString(),
+				reason,
+				type: "account_deletion",
+			},
+		};
+
 		return res.json({
 			message: "Account and all related data deleted successfully",
+			paystackPayload, // return so frontend or service can act on it
 		});
 	} catch (error) {
 		return res.status(500).json({ message: error.message });
