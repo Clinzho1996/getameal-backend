@@ -5,33 +5,28 @@ import WalletTransaction from "../models/WalletTransaction.js";
 
 // Handle successful payment
 export const handleSuccessfulPayment = async (data) => {
-	const order = await Order.findOne({
-		paymentReference: data.reference,
-	});
+	const orderId = data.metadata?.orderId;
+
+	let order = null;
+
+	if (orderId) {
+		order = await Order.findById(orderId);
+	}
+
+	// fallback (safety)
+	if (!order) {
+		order = await Order.findOne({
+			paymentReference: data.reference,
+		});
+	}
 
 	if (!order || order.paymentStatus === "paid") return;
 
 	order.paymentStatus = "paid";
 	order.status = "confirmed";
+	order.paymentReference = data.reference;
+
 	await order.save();
-
-	const cook = await User.findById(order.cookId);
-
-	const commissionRate = 0.1;
-	const commission = order.totalAmount * commissionRate;
-	const cookAmount = order.totalAmount - commission;
-
-	cook.walletBalance += cookAmount;
-	await cook.save();
-
-	await WalletTransaction.create({
-		cookId: cook._id,
-		type: "credit",
-		amount: cookAmount,
-		reference: order._id.toString(),
-	});
-
-	console.log(`Cook ${cook._id} credited: ${cookAmount}`);
 };
 
 // Handle refund
