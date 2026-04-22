@@ -5,28 +5,48 @@ import WalletTransaction from "../models/WalletTransaction.js";
 
 // Handle successful payment
 export const handleSuccessfulPayment = async (data) => {
-	const orderId = data.metadata?.orderId;
+	try {
+		let order = null;
 
-	let order = null;
+		// ✅ 1. FIRST: Use metadata (MOST RELIABLE)
+		const orderId = data.metadata?.orderId;
 
-	if (orderId) {
-		order = await Order.findById(orderId);
+		if (orderId) {
+			order = await Order.findById(orderId);
+		}
+
+		// ✅ 2. FALLBACK: Use reference
+		if (!order) {
+			order = await Order.findOne({
+				paymentReference: data.reference,
+			});
+		}
+
+		// ❌ If still not found → log it
+		if (!order) {
+			console.error("❌ Webhook: Order not found", {
+				reference: data.reference,
+				metadata: data.metadata,
+			});
+			return;
+		}
+
+		// ✅ Prevent double processing
+		if (order.paymentStatus === "paid") {
+			return;
+		}
+
+		// ✅ Update order
+		order.paymentStatus = "paid";
+		order.status = "confirmed";
+		order.paymentReference = data.reference;
+
+		await order.save();
+
+		console.log("✅ Payment applied via webhook:", order._id);
+	} catch (error) {
+		console.error("Webhook processing error:", error.message);
 	}
-
-	// fallback (safety)
-	if (!order) {
-		order = await Order.findOne({
-			paymentReference: data.reference,
-		});
-	}
-
-	if (!order || order.paymentStatus === "paid") return;
-
-	order.paymentStatus = "paid";
-	order.status = "confirmed";
-	order.paymentReference = data.reference;
-
-	await order.save();
 };
 
 // Handle refund
