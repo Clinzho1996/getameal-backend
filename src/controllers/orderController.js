@@ -9,6 +9,7 @@ import { emitOrderUpdate } from "../utils/Notification.js";
 
 import crypto from "crypto";
 import { sendNotification } from "../services/notificationService.js";
+import { sendPushToUser } from "../services/pushService.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
 
 export const createOrder = async (req, res) => {
@@ -166,8 +167,8 @@ export const handlePaymentCallback = async (req, res) => {
 	try {
 		const { reference, orderId } = req.query;
 
-		if (!reference || !orderId) {
-			return res.status(400).json({ message: "Missing reference or orderId" });
+		if (!reference) {
+			return res.status(400).json({ message: "Missing payment reference" });
 		}
 
 		// 🔐 Verify payment with Paystack
@@ -180,7 +181,11 @@ export const handlePaymentCallback = async (req, res) => {
 			},
 		);
 
-		const paymentData = verify.data.data;
+		const paymentData = verify.data?.data;
+
+		if (!paymentData) {
+			return res.status(400).json({ message: "Invalid Paystack response" });
+		}
 
 		if (paymentData.status !== "success") {
 			return res.status(400).json({ message: "Payment not successful" });
@@ -188,14 +193,17 @@ export const handlePaymentCallback = async (req, res) => {
 
 		let order = null;
 
-		// 1. Try metadata lookup (friend flow)
-		const paymentLinkCode = paymentData.metadata?.paymentLinkCode;
+		// ✅ 1. Try metadata (BEST PRACTICE)
+		const metaOrderId = paymentData.metadata?.orderId;
 
-		if (paymentLinkCode) {
-			order = await Order.findOne({ paymentLinkCode });
+		if (metaOrderId) {
+			order = await Order.findById(metaOrderId)
+				.populate("mealItems.mealId")
+				.populate("cookId")
+				.populate("userId");
 		}
 
-		// 2. Fallback to orderId (CRITICAL)
+		// ✅ 2. Fallback to query param
 		if (!order && orderId) {
 			order = await Order.findById(orderId)
 				.populate("mealItems.mealId")
@@ -203,9 +211,9 @@ export const handlePaymentCallback = async (req, res) => {
 				.populate("userId");
 		}
 
-		// 3. Final fail
+		// ❌ If still not found
 		if (!order) {
-			console.error("Order lookup failed", {
+			console.error("❌ Order lookup failed", {
 				reference,
 				orderId,
 				metadata: paymentData.metadata,
@@ -213,34 +221,80 @@ export const handlePaymentCallback = async (req, res) => {
 			return res.status(404).json({ message: "Order not found" });
 		}
 
-		if (!order) {
-			return res.status(404).json({ message: "Order not found" });
+		// ✅ Prevent double processing (idempotency)
+		if (order.paymentStatus === "paid") {
+			return res.status(200).json({
+				message: "Already processed",
+				order,
+			});
 		}
 
-		// Prevent double processing
-		if (order.paymentStatus === "paid") {
-			return res.json({ message: "Already processed", order });
+		// ✅ Optional: Validate amount (important)
+		const paidAmount = paymentData.amount / 100; // Paystack returns kobo
+
+		if (paidAmount !== order.totalAmount) {
+			console.warn("⚠️ Amount mismatch", {
+				paidAmount,
+				expected: order.totalAmount,
+			});
+			return res.status(400).json({
+				message: "Amount mismatch",
+			});
 		}
 
 		// ✅ Update order
 		order.paymentStatus = "paid";
 		order.status = "confirmed";
+		order.paymentReference = reference;
+
 		await order.save();
 
-		emitOrderUpdate(order);
-		sendNotification(order.userId, "Payment successful, order confirmed");
+		// ✅ Emit realtime update (if you use sockets)
+		if (typeof emitOrderUpdate === "function") {
+			emitOrderUpdate(order);
+		}
 
-		await createAdminNotification({
-			title: "Payment Received",
-			body: `A payment of ₦${order.totalAmount.toFixed(2)} was received from ${req.user.fullName}`,
-			type: "order",
-			data: { orderId: order._id },
+		// ✅ Notify user
+		if (typeof sendNotification === "function") {
+			sendNotification(
+				order.userId,
+				"Payment successful",
+				"Your order has been confirmed",
+			);
+
+			sendPushToUser(
+				order.userId,
+				"Payment successful",
+				"Your order has been confirmed",
+			);
+		}
+
+		// ✅ Admin notification (safe version)
+		if (typeof createAdminNotification === "function") {
+			await createAdminNotification({
+				title: "Payment Received",
+				body: `₦${order.totalAmount.toFixed(
+					2,
+				)} payment received for order ${order._id}`,
+				type: "order",
+				data: { orderId: order._id },
+			});
+		}
+
+		return res.status(200).json({
+			message: "Payment verified successfully",
+			order,
 		});
-
-		res.json({ message: "Payment verified successfully", order });
 	} catch (error) {
-		console.error("Payment verification error:", error);
-		res.status(500).json({ message: error.message });
+		console.error(
+			"❌ Payment verification error:",
+			error?.response?.data || error.message,
+		);
+
+		return res.status(500).json({
+			message: "Payment verification failed",
+			error: error.message,
+		});
 	}
 };
 // Update order (Owner or Cook)
