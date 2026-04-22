@@ -5,88 +5,155 @@ import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 
 export const paystackWebhook = async (req, res) => {
-	// 1️⃣ Verify signature
-	const hash = crypto
-		.createHmac("sha512", process.env.PAYSTACK_SECRET)
-		.update(JSON.stringify(req.body))
-		.digest("hex");
+	try {
+		// 1️⃣ Verify signature
+		const hash = crypto
+			.createHmac("sha512", process.env.PAYSTACK_SECRET)
+			.update(JSON.stringify(req.body))
+			.digest("hex");
 
-	if (hash !== req.headers["x-paystack-signature"]) {
-		return res.sendStatus(401);
-	}
-
-	const event = req.body;
-
-	// 2️⃣ Handle successful payment
-	if (event.event === "charge.success") {
-		const reference = event.data.reference;
-
-		const order = await Order.findOne({ paymentReference: reference });
-
-		if (!order || order.paymentStatus === "paid") {
-			return res.sendStatus(200);
+		if (hash !== req.headers["x-paystack-signature"]) {
+			console.error("❌ Invalid Paystack signature");
+			return res.sendStatus(401);
 		}
 
-		order.paymentStatus = "paid";
-		order.status = "confirmed";
-		await order.save();
+		const event = req.body;
 
-		const cook = await User.findById(order.cookId);
+		// 🔍 DEBUG (IMPORTANT — remove later)
+		console.log("🔥 PAYSTACK EVENT:", JSON.stringify(event.data, null, 2));
 
-		const commissionRate = 0.1;
-		const commission = order.totalAmount * commissionRate;
-		const cookAmount = order.totalAmount - commission;
+		// =========================
+		// ✅ PAYMENT SUCCESS
+		// =========================
+		if (event.event === "charge.success") {
+			const data = event.data;
 
-		cook.walletBalance += cookAmount;
-		await cook.save();
+			let order = null;
 
-		await WalletTransaction.create({
-			cookId: cook._id,
-			type: "credit",
-			amount: cookAmount,
-			reference: order._id.toString(),
-			description: "Order payment",
-		});
+			// ✅ 1. PRIORITY: metadata (MOST RELIABLE)
+			if (data.metadata?.orderId) {
+				order = await Order.findById(data.metadata.orderId);
+			}
 
-		const io = getIO();
-		io.to(`user_${order.userId}`).emit("order_update", order);
-	}
+			// ✅ 2. FALLBACK: reference
+			if (!order) {
+				const reference = data.reference || data.trxref;
 
-	// 3️⃣ Handle refund processed
-	if (event.event === "refund.processed") {
-		const transactionRef = event.data.transaction; // original payment reference
-		const order = await Order.findOne({ paymentReference: transactionRef });
+				order = await Order.findOne({
+					paymentReference: reference,
+				});
+			}
 
-		if (!order || order.paymentStatus === "refunded") {
-			return res.sendStatus(200);
+			// ❌ Not found
+			if (!order) {
+				console.error("❌ Order not found in webhook", {
+					reference: data.reference,
+					metadata: data.metadata,
+				});
+				return res.sendStatus(200);
+			}
+
+			// ✅ Idempotency (VERY IMPORTANT)
+			if (order.paymentStatus === "paid") {
+				return res.sendStatus(200);
+			}
+
+			// ✅ Update order
+			order.paymentStatus = "paid";
+			order.status = "confirmed";
+			order.paymentReference = data.reference;
+
+			await order.save();
+
+			// ✅ Credit cook
+			const cook = await User.findById(order.cookId);
+
+			const commissionRate = 0.1;
+			const cookAmount = order.totalAmount * (1 - commissionRate);
+
+			cook.walletBalance += cookAmount;
+			await cook.save();
+
+			// ✅ Log transaction
+			await WalletTransaction.create({
+				cookId: cook._id,
+				type: "credit",
+				amount: cookAmount,
+				reference: order._id.toString(),
+				description: "Order payment",
+			});
+
+			// ✅ Realtime update
+			const io = getIO();
+			io.to(`user_${order.userId}`).emit("order_update", order);
+
+			console.log("✅ Payment processed:", order._id);
 		}
 
-		order.paymentStatus = "refunded";
-		order.status = "cancelled";
-		order.refundReference = event.data.reference; // Paystack refund reference
-		await order.save();
+		// =========================
+		// 🔁 REFUND HANDLING
+		// =========================
+		if (event.event === "refund.processed") {
+			const data = event.data;
 
-		// Reverse cook wallet safely
-		const cook = await User.findById(order.cookId);
-		const refundAmount = order.totalAmount - order.totalAmount * 0.1; // subtract commission
+			let order = null;
 
-		cook.walletBalance = Math.max(cook.walletBalance - refundAmount, 0);
-		await cook.save();
+			// ✅ Try metadata first
+			if (data.metadata?.orderId) {
+				order = await Order.findById(data.metadata.orderId);
+			}
 
-		await WalletTransaction.create({
-			cookId: cook._id,
-			type: "debit",
-			amount: refundAmount,
-			reference: order._id.toString(),
-			description: "Refund reversal",
-		});
+			// ✅ Fallback to transaction reference
+			if (!order) {
+				order = await Order.findOne({
+					paymentReference: data.transaction,
+				});
+			}
 
-		// Notify user
-		const io = getIO();
-		io.to(`user_${order.userId}`).emit("order_update", order);
+			if (!order) {
+				console.error("❌ Refund order not found");
+				return res.sendStatus(200);
+			}
+
+			if (order.paymentStatus === "refunded") {
+				return res.sendStatus(200);
+			}
+
+			order.paymentStatus = "refunded";
+			order.status = "cancelled";
+			order.refundReference = data.reference;
+
+			await order.save();
+
+			// ✅ Reverse wallet safely
+			const cook = await User.findById(order.cookId);
+
+			const commissionRate = 0.1;
+			const refundAmount = order.totalAmount * (1 - commissionRate);
+
+			cook.walletBalance = Math.max(cook.walletBalance - refundAmount, 0);
+
+			await cook.save();
+
+			await WalletTransaction.create({
+				cookId: cook._id,
+				type: "debit",
+				amount: refundAmount,
+				reference: order._id.toString(),
+				description: "Refund reversal",
+			});
+
+			const io = getIO();
+			io.to(`user_${order.userId}`).emit("order_update", order);
+
+			console.log("🔁 Refund processed:", order._id);
+		}
+
+		return res.sendStatus(200);
+	} catch (error) {
+		console.error("❌ Webhook error:", error.message);
+		return res.sendStatus(500);
 	}
-
-	res.sendStatus(200);
 };
 
 export const paymentWebhook = async (req, res) => {
