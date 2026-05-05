@@ -1,6 +1,6 @@
 // backend/services/pushService.js
+import admin from "../config/firebase.js";
 import User from "../models/User.js";
-
 
 // Send push notification to a specific user
 export const sendPushToUser = async (userId, title, body, data = {}) => {
@@ -52,7 +52,7 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 			tokens,
 		};
 
-		const response = await admin.messaging().sendMulticast(message);
+		const response = await admin.messaging().sendEachForMulticast(message);
 
 		const errors = [];
 
@@ -185,17 +185,22 @@ export const removeAllDeviceTokens = async (userId) => {
 	}
 };
 
-// Legacy sendPush function (keep for backward compatibility)
-// backend/services/pushService.js - Update sendPush function
 export const sendPush = async (tokens, { title, body, data = {} }) => {
 	try {
+		if (!tokens?.length) return { successCount: 0, failureCount: 0 };
+
 		const message = {
-			notification: { title, body },
-			data,
-			tokens: tokens.map((t) => t.token), // extract token string
+			tokens,
+			notification: {
+				title,
+				body,
+			},
+			data: Object.fromEntries(
+				Object.entries(data).map(([k, v]) => [k, String(v)]),
+			),
 		};
 
-		const response = await admin.messaging().sendMulticast(message);
+		const response = await admin.messaging().sendEachForMulticast(message);
 
 		return {
 			success: true,
@@ -204,7 +209,7 @@ export const sendPush = async (tokens, { title, body, data = {} }) => {
 			responses: response.responses,
 		};
 	} catch (error) {
-		console.error(error);
+		console.error("FCM Send Error:", error);
 		throw error;
 	}
 };

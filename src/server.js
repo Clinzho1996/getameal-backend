@@ -1,5 +1,4 @@
 import dotenv from "dotenv";
-import admin from "firebase-admin";
 
 dotenv.config(); // MUST be first line
 
@@ -33,64 +32,6 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
-
-// ADD THIS ENDPOINT
-app.post("/api/generate-custom-token", async (req, res) => {
-	try {
-		const { email, name } = req.body;
-
-		console.log("Generate token request for:", email);
-
-		if (!email) {
-			return res.status(400).json({
-				success: false,
-				message: "Email is required",
-			});
-		}
-
-		// Check if admin is available
-		if (!admin || !admin.auth) {
-			console.error("Admin not initialized");
-			return res.status(500).json({
-				success: false,
-				message: "Firebase Admin not initialized",
-			});
-		}
-
-		// Create or get user
-		let user;
-		try {
-			user = await admin.auth().getUserByEmail(email);
-			console.log("Existing user found:", user.uid);
-		} catch (error) {
-			// User doesn't exist, create one
-			console.log("Creating new user...");
-			user = await admin.auth().createUser({
-				email: email,
-				displayName: name || email.split("@")[0],
-				emailVerified: true,
-			});
-			console.log("New user created:", user.uid);
-		}
-
-		// Generate custom token
-		const customToken = await admin.auth().createCustomToken(user.uid);
-		console.log("Custom token generated successfully");
-
-		res.json({
-			success: true,
-			customToken: customToken,
-			uid: user.uid,
-			email: user.email,
-		});
-	} catch (error) {
-		console.error("Error in generate-custom-token:", error);
-		res.status(500).json({
-			success: false,
-			message: error.message,
-		});
-	}
-});
 
 // Routes
 app.use("/api/auth", authRoutes);

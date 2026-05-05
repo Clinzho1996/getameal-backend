@@ -2,10 +2,10 @@ import bcrypt from "bcryptjs";
 import CookProfile from "../models/CookProfile.js";
 import OTP from "../models/OTP.js";
 import User from "../models/User.js";
-import { verifyFirebaseToken } from "../services/firebaseService.js";
 import { sendOTPEmail } from "../utils/emailService.js";
 import { generateOTP } from "../utils/generateOtp.js";
 import { generateToken } from "../utils/jwt.js";
+import { verifyFirebaseToken } from "../config/firebase.js";
 
 export const createAdmin = async (req, res) => {
 	try {
