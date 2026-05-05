@@ -1,9 +1,6 @@
 // backend/services/pushService.js
-import { Expo } from "expo-server-sdk";
 import User from "../models/User.js";
 
-// Create a new Expo SDK client
-const expo = new Expo();
 
 // Send push notification to a specific user
 export const sendPushToUser = async (userId, title, body, data = {}) => {
@@ -12,7 +9,6 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 		console.log(`Title: ${title}`);
 		console.log(`Body: ${body}`);
 
-		// Find user with push tokens (not deviceTokens)
 		const user = await User.findById(userId).select(
 			"pushTokens email fullName",
 		);
@@ -22,7 +18,6 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 			return { success: false, message: "User not found" };
 		}
 
-		// Check pushTokens array (not deviceTokens)
 		if (!user.pushTokens || user.pushTokens.length === 0) {
 			console.log(`❌ No push tokens for user: ${user.email}`);
 			return { success: false, message: "No device tokens" };
@@ -32,84 +27,68 @@ export const sendPushToUser = async (userId, title, body, data = {}) => {
 			`✅ Found ${user.pushTokens.length} push token(s) for ${user.email}`,
 		);
 
-		const messages = [];
-		const validTokens = [];
+		// Extract valid token strings
+		const tokens = user.pushTokens.map((t) => t.token).filter(Boolean);
 
-		// Prepare messages for each valid token
-		for (const pushToken of user.pushTokens) {
-			console.log(`Checking token: ${pushToken.token.substring(0, 30)}...`);
-
-			// Check if it's a valid Expo push token
-			if (!Expo.isExpoPushToken(pushToken.token)) {
-				console.log(`❌ Invalid Expo push token: ${pushToken.token}`);
-				continue;
-			}
-
-			validTokens.push(pushToken.token);
-
-			messages.push({
-				to: pushToken.token,
-				sound: "default",
-				title: title,
-				body: body,
-				data: {
-					...data,
-					userId: user._id.toString(),
-					timestamp: new Date().toISOString(),
-				},
-				priority: "high",
-			});
-		}
-
-		if (messages.length === 0) {
-			console.log("❌ No valid Expo push tokens found");
+		if (tokens.length === 0) {
+			console.log("❌ No valid tokens after extraction");
 			return { success: false, message: "No valid tokens" };
 		}
 
-		console.log(`📤 Sending ${messages.length} push notification(s)...`);
+		console.log(`📤 Sending ${tokens.length} push notification(s)...`);
 
-		// Send notifications in chunks
-		const chunks = expo.chunkPushNotifications(messages);
-		const tickets = [];
+		const message = {
+			notification: {
+				title,
+				body,
+			},
+			data: {
+				...Object.fromEntries(
+					Object.entries(data).map(([k, v]) => [k, String(v)]),
+				),
+				userId: user._id.toString(),
+				timestamp: new Date().toISOString(),
+			},
+			tokens,
+		};
+
+		const response = await admin.messaging().sendMulticast(message);
+
 		const errors = [];
 
-		for (const chunk of chunks) {
-			try {
-				const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-				tickets.push(...ticketChunk);
+		response.responses.forEach((res, index) => {
+			if (!res.success) {
+				const errorMsg = res.error?.message || "Unknown error";
 
-				// Check for errors in tickets
-				ticketChunk.forEach((ticket, index) => {
-					if (ticket.status === "error") {
-						console.log(`Ticket error: ${ticket.message}`);
-						errors.push({
-							token: messages[index]?.to,
-							error: ticket.message,
-						});
+				console.log(`❌ Token error: ${errorMsg}`);
 
-						// If token is invalid, remove it from database
-						if (ticket.message === "DeviceNotRegistered") {
-							console.log(`Removing invalid token: ${messages[index]?.to}`);
-							User.findByIdAndUpdate(user._id, {
-								$pull: { pushTokens: { token: messages[index]?.to } },
-							});
-						}
-					}
+				errors.push({
+					token: tokens[index],
+					error: errorMsg,
 				});
-			} catch (error) {
-				console.error("Error sending chunk:", error);
-				errors.push({ error: error.message });
+
+				// Remove invalid tokens
+				if (
+					errorMsg.includes("registration-token-not-registered") ||
+					errorMsg.includes("invalid-registration-token")
+				) {
+					console.log(`🗑 Removing invalid token: ${tokens[index]}`);
+
+					User.findByIdAndUpdate(user._id, {
+						$pull: { pushTokens: { token: tokens[index] } },
+					}).catch(console.error);
+				}
 			}
-		}
+		});
 
 		console.log(
-			`✅ Push sent: ${messages.length - errors.length} successful, ${errors.length} failed`,
+			`✅ Push sent: ${response.successCount} successful, ${response.failureCount} failed`,
 		);
 
 		return {
 			success: true,
-			sent: messages.length - errors.length,
-			failed: errors.length,
+			sent: response.successCount,
+			failed: response.failureCount,
 			errors: errors.length > 0 ? errors : undefined,
 		};
 	} catch (error) {
@@ -210,59 +189,22 @@ export const removeAllDeviceTokens = async (userId) => {
 // backend/services/pushService.js - Update sendPush function
 export const sendPush = async (tokens, { title, body, data = {} }) => {
 	try {
-		if (!tokens || tokens.length === 0) {
-			return { success: false, message: "No tokens provided" };
-		}
+		const message = {
+			notification: { title, body },
+			data,
+			tokens: tokens.map((t) => t.token), // extract token string
+		};
 
-		const messages = [];
-		const validTokens = [];
-		const invalidTokens = [];
-
-		for (const token of tokens) {
-			if (!Expo.isExpoPushToken(token)) {
-				console.log(`Invalid push token: ${token}`);
-				invalidTokens.push(token);
-				continue;
-			}
-			validTokens.push(token);
-			messages.push({
-				to: token,
-				sound: "default",
-				title: title,
-				body: body,
-				data: data,
-				priority: "high",
-			});
-		}
-
-		if (messages.length === 0) {
-			return {
-				success: false,
-				message: "No valid tokens",
-				invalidTokens: invalidTokens.length,
-			};
-		}
-
-		const chunks = expo.chunkPushNotifications(messages);
-		const tickets = [];
-
-		for (const chunk of chunks) {
-			try {
-				const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-				tickets.push(...ticketChunk);
-			} catch (error) {
-				console.error("Error sending chunk:", error);
-			}
-		}
+		const response = await admin.messaging().sendMulticast(message);
 
 		return {
 			success: true,
-			sent: messages.length,
-			invalid: invalidTokens.length,
-			tickets: tickets,
+			successCount: response.successCount,
+			failureCount: response.failureCount,
+			responses: response.responses,
 		};
 	} catch (error) {
-		console.error("Error sending push:", error);
+		console.error(error);
 		throw error;
 	}
 };

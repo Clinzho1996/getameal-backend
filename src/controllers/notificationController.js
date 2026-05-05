@@ -1,9 +1,9 @@
 // backend/controllers/notificationController.js
+import admin from "../config/firebase.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import { sendPush } from "../services/pushService.js";
 import { getResendInstance } from "../utils/emailService.js";
-
 // ===============================
 // GET USER NOTIFICATIONS
 // ===============================
@@ -137,55 +137,74 @@ export const registerPushToken = async (req, res) => {
 		const userId = req.user._id;
 		const { token, platform, deviceId } = req.body;
 
-		console.log("Registering push token:", { token, platform, deviceId });
+		console.log("📱 Registering push token:", {
+			token,
+			platform,
+			deviceId,
+		});
 
 		if (!token || !platform) {
-			return res.status(400).json({ error: "Token and platform are required" });
+			return res.status(400).json({
+				error: "Token and platform are required",
+			});
+		}
+
+		// ===============================
+		// BASIC TOKEN VALIDATION
+		// ===============================
+		if (!token.includes(":") || token.length < 30) {
+			return res.status(400).json({
+				error: "Invalid FCM token format",
+			});
 		}
 
 		const user = await User.findById(userId);
 
 		if (!user) {
-			return res.status(404).json({ error: "User not found" });
+			return res.status(404).json({
+				error: "User not found",
+			});
 		}
 
-		// Handle deviceId if it's an object (from Expo)
+		// ===============================
+		// DEVICE ID NORMALIZATION
+		// ===============================
 		let deviceIdString = null;
+
 		if (deviceId) {
-			// If deviceId is an object with data property (Expo format)
-			if (typeof deviceId === "object") {
-				deviceIdString =
-					deviceId.data || deviceId.token || JSON.stringify(deviceId);
-			} else if (typeof deviceId === "string") {
-				deviceIdString = deviceId;
-			} else {
-				deviceIdString = String(deviceId);
-			}
+			deviceIdString =
+				typeof deviceId === "object"
+					? deviceId.data || deviceId.token || JSON.stringify(deviceId)
+					: String(deviceId);
 		}
 
-		// Initialize pushTokens array if it doesn't exist
+		// ===============================
+		// INIT ARRAY
+		// ===============================
 		if (!user.pushTokens) {
 			user.pushTokens = [];
 		}
 
-		// Clean up any existing entries with invalid deviceId
+		// ===============================
+		// REMOVE INVALID STRUCTURES
+		// ===============================
 		user.pushTokens = user.pushTokens.filter(
-			(t) => t.token && typeof t.token === "string",
+			(t) => t?.token && typeof t.token === "string",
 		);
 
-		// Check if token already exists
-		const existingTokenIndex = user.pushTokens.findIndex(
-			(t) => t.token === token,
-		);
+		// ===============================
+		// UPSERT TOKEN
+		// ===============================
+		const existingIndex = user.pushTokens.findIndex((t) => t.token === token);
 
-		if (existingTokenIndex !== -1) {
-			// Update existing token
-			user.pushTokens[existingTokenIndex].lastUsed = new Date();
-			user.pushTokens[existingTokenIndex].platform = platform;
-			if (deviceIdString)
-				user.pushTokens[existingTokenIndex].deviceId = deviceIdString;
+		if (existingIndex !== -1) {
+			user.pushTokens[existingIndex].lastUsed = new Date();
+			user.pushTokens[existingIndex].platform = platform;
+
+			if (deviceIdString) {
+				user.pushTokens[existingIndex].deviceId = deviceIdString;
+			}
 		} else {
-			// Add new token
 			user.pushTokens.push({
 				token,
 				platform,
@@ -197,12 +216,14 @@ export const registerPushToken = async (req, res) => {
 
 		await user.save();
 
+		console.log("✅ Token saved successfully");
+
 		res.status(200).json({
 			success: true,
 			message: "Push token registered successfully",
 		});
 	} catch (err) {
-		console.error("Register push token error:", err);
+		console.error("❌ Register push token error:", err);
 		res.status(500).json({ error: err.message });
 	}
 };
@@ -286,12 +307,6 @@ export const getNotificationSettings = async (req, res) => {
 	}
 };
 
-// ===============================
-// CREATE NOTIFICATION (Admin/System)
-// ===============================
-// ===============================
-// CREATE NOTIFICATION (Admin/System)
-// ===============================
 export const createNotification = async (req, res) => {
 	const resend = getResendInstance();
 
@@ -339,28 +354,70 @@ export const createNotification = async (req, res) => {
 		}
 
 		// ===============================
-		// SEND PUSH
+		// SEND PUSH (FCM)
 		// ===============================
 		if (sendPush && user.notificationSettings?.push_enabled !== false) {
-			const tokens = user.pushTokens?.map((t) => t.token) || [];
+			const tokens = user.pushTokens?.map((t) => t.token).filter(Boolean) || [];
+
+			console.log("📱 Tokens found:", tokens.length);
+			console.log("🔥 Firebase apps:", admin.apps.length);
 
 			if (tokens.length > 0) {
 				try {
-					await sendPush(tokens, {
-						title,
-						body,
+					const response = await admin.messaging().sendEachForMulticast({
+						tokens,
+						notification: {
+							title,
+							body,
+						},
 						data: {
 							notificationId: notification._id.toString(),
 							type,
-							...data,
+							...Object.fromEntries(
+								Object.entries(data).map(([k, v]) => [k, String(v)]),
+							),
 						},
 					});
 
-					notification.is_push_sent = true;
+					console.log("TOKEN SAMPLE:", tokens[0]);
+					console.log("🔥 FCM RESPONSE:", response);
+
+					// Handle failures
+					const failedTokens = [];
+
+					response.responses.forEach((resp, index) => {
+						if (!resp.success) {
+							const errorMsg = resp.error?.message;
+							console.log(`❌ Token failed: ${tokens[index]} | ${errorMsg}`);
+
+							// Remove invalid tokens
+							if (
+								errorMsg?.includes("registration-token-not-registered") ||
+								errorMsg?.includes("invalid-registration-token")
+							) {
+								failedTokens.push(tokens[index]);
+							}
+						}
+					});
+
+					// Cleanup invalid tokens
+					if (failedTokens.length > 0) {
+						await User.findByIdAndUpdate(user._id, {
+							$pull: {
+								pushTokens: { token: { $in: failedTokens } },
+							},
+						});
+						console.log("🗑 Removed invalid tokens:", failedTokens.length);
+					}
+
+					// Mark push status
+					notification.is_push_sent = response.successCount > 0;
 					await notification.save();
 				} catch (err) {
-					console.error("Push send failed:", err.message);
+					console.error("❌ Push send failed:", err.message);
 				}
+			} else {
+				console.log("⚠️ No push tokens available");
 			}
 		}
 
@@ -382,7 +439,7 @@ export const createNotification = async (req, res) => {
 				notification.is_email_sent = true;
 				await notification.save();
 			} catch (err) {
-				console.error("Email send failed:", err.message);
+				console.error("❌ Email send failed:", err.message);
 			}
 		}
 
@@ -394,7 +451,7 @@ export const createNotification = async (req, res) => {
 			data: notification,
 		});
 	} catch (err) {
-		console.error("Create notification error:", err);
+		console.error("❌ Create notification error:", err);
 		return res.status(500).json({
 			error: err.message,
 		});
