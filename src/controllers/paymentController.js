@@ -122,7 +122,7 @@ export const handleRefund = async (data) => {
 	cook.walletBalance -= order.totalAmount;
 	await cook.save();
 
-	sendPushToUser(
+	await sendPushToUser(
 		order.customerId,
 		"Payment Refunded",
 		`Your payment for order ${order._id} has been refunded.`,

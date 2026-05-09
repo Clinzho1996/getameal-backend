@@ -262,7 +262,7 @@ export const handlePaymentCallback = async (req, res) => {
 				"Your order has been confirmed",
 			);
 
-			sendPushToUser(
+			await sendPushToUser(
 				order.userId,
 				"Payment successful",
 				"Your order has been confirmed",
@@ -358,7 +358,7 @@ export const updateOrder = async (req, res) => {
 		}
 
 		if (typeof sendPushToUser === "function") {
-			sendPushToUser(
+			await sendPushToUser(
 				order.userId,
 				"Order Update",
 				`The order status was updated by ${req.user.fullName}`,
@@ -401,12 +401,12 @@ export const cancelOrder = async (orderId) => {
 	});
 
 	// Send notification to user
-	sendNotification(
+	await sendNotification(
 		order.userId,
 		"Order cancelled",
 		"Your order has been cancelled",
 	);
-	sendPushToUser(
+	await sendPushToUser(
 		order.userId,
 		"Order cancelled",
 		"Your order has been cancelled",
@@ -476,8 +476,12 @@ export const updatePaymentStatus = async (req, res) => {
 	await order.save();
 
 	emitOrderUpdate(order);
-	sendNotification(order.userId, "Payment successful, order confirmed");
-	sendPushToUser(
+	await sendNotification(
+		order.userId,
+		"Payment successful, order confirmed",
+		"Your payment was successful and your order is confirmed",
+	);
+	await sendPushToUser(
 		order.userId,
 		"Payment successful",
 		"Your order has been confirmed",
@@ -570,7 +574,7 @@ export const verifyDeliveryOTP = async (req, res) => {
 			`You earned ₦${cookAmount.toFixed(2)} from an order!`,
 		);
 
-		sendPushToUser(
+		await sendPushToUser(
 			cook._id,
 			"Order Completed",
 			`You earned ₦${cookAmount.toFixed(2)} from an order!`,

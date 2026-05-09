@@ -95,7 +95,7 @@ export const requestPayout = async (req, res) => {
 			data: { cookId: userId },
 		});
 
-		sendPushToUser(
+		await sendPushToUser(
 			userId,
 			"Payout Requested",
 			`Your payout request for ${amount} NGN has been received and is being processed.`,
