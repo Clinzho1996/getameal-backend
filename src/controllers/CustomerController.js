@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
+import { sendPushToUser } from "../services/pushService.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
 import { getResendInstance } from "../utils/emailService.js";
 
@@ -207,12 +208,21 @@ export const creditCustomerWallet = async (req, res) => {
 		const { userId } = req.params;
 		const { amount, reason, note } = req.body;
 
-		const user = await User.findById(userId);
-		if (!user) return res.status(404).json({ message: "User not found" });
+		// Validate input
+		if (!amount || amount <= 0) {
+			return res.status(400).json({ message: "Invalid amount" });
+		}
 
+		const user = await User.findById(userId);
+		if (!user) {
+			return res.status(404).json({ message: "User not found" });
+		}
+
+		// Update wallet
 		user.walletBalance = (user.walletBalance || 0) + amount;
 		await user.save();
 
+		// Create transaction record
 		await WalletTransaction.create({
 			userId: user._id,
 			type: "credit",
@@ -222,19 +232,49 @@ export const creditCustomerWallet = async (req, res) => {
 			reference: new mongoose.Types.ObjectId(),
 		});
 
-		res
-			.status(200)
-			.json({ message: "Wallet credited", balance: user.walletBalance });
+		// Send push notification (with error handling)
+		let pushResult = { success: false, message: "Push not attempted" };
 
-		await createAdminNotification({
+		try {
+			console.log(`📱 Attempting to send push to user: ${userId}`);
+			console.log(`User has pushTokens: ${user.pushTokens ? "Yes" : "No"}`);
+			console.log(`Token count: ${user.pushTokens?.length || 0}`);
+
+			pushResult = await sendPushToUser(
+				userId,
+				"Wallet Credited",
+				`Your wallet has been credited with ${amount} NGN. Reason: ${reason}`,
+				{ amount, reason, type: "wallet_credit" },
+			);
+
+			console.log("Push result:", pushResult);
+		} catch (pushError) {
+			console.error("❌ Push notification failed:", pushError.message);
+			// Don't throw - just log the error
+			pushResult = { success: false, error: pushError.message };
+		}
+
+		// Send response
+		res.status(200).json({
+			message: "Wallet credited",
+			balance: user.walletBalance,
+			pushNotificationSent: pushResult.success,
+			pushDetails: pushResult,
+		});
+
+		// Create admin notification (don't await - fire and forget)
+		createAdminNotification({
 			title: "Wallet Credited",
 			body: `The customer "${user.fullName}" has been credited with ${amount}`,
 			type: "customer",
-			data: { userId: req.user._id },
-		});
+			data: { userId: req.user._id, amount, reason },
+		}).catch((err) => console.error("Admin notification failed:", err));
 	} catch (error) {
-		console.error(error);
-		res.status(500).json({ message: "Server error", error: error.message });
+		console.error("Credit wallet error:", error);
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
 	}
 };
 
@@ -247,6 +287,12 @@ export const toggleCustomerStatus = async (req, res) => {
 		const user = await User.findById(userId);
 		if (!user) return res.status(404).json({ message: "User not found" });
 
+		await sendPushToUser(
+			userId,
+			`Account ${action === "suspend" ? "Suspended" : "Reactivated"}`,
+			`Your account has been ${action === "suspend" ? "suspended" : "reactivated"} by the admin.`,
+			{ action: `account_${action}` },
+		);
 		user.status = action === "suspend" ? "suspended" : "active";
 		await user.save();
 

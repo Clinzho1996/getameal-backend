@@ -56,6 +56,7 @@ import {
 	createNotification,
 	sendBulkNotification,
 	sendPushToAllUsers,
+	testPushToToken,
 } from "../controllers/notificationController.js";
 import adminOnly from "../middleware/admin.js";
 import protect from "../middleware/auth.js";
@@ -89,6 +90,7 @@ router.get("/payments/stats", protect, adminOnly, getPaymentStats);
 router.get("/payments", protect, adminOnly, getPayments);
 router.get("/search", protect, adminOnly, globalSearch);
 
+router.post("/test-push", protect, adminOnly, testPushToToken);
 router.post("/send-to-all", protect, adminOnly, sendPushToAllUsers);
 router.post("/create", protect, adminOnly, createNotification);
 router.post("/bulk", protect, adminOnly, sendBulkNotification);

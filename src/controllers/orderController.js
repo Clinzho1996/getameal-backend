@@ -347,6 +347,23 @@ export const updateOrder = async (req, res) => {
 			type: "order",
 			data: { orderId: order._id },
 		});
+
+		// Send notification to user
+		if (typeof sendNotification === "function") {
+			sendNotification(
+				order.userId,
+				"Order Update",
+				`The order status was updated by ${req.user.fullName}`,
+			);
+		}
+
+		if (typeof sendPushToUser === "function") {
+			sendPushToUser(
+				order.userId,
+				"Order Update",
+				`The order status was updated by ${req.user.fullName}`,
+			);
+		}
 		// Apply other updates for owner or cook
 		Object.assign(order, otherUpdates);
 
@@ -382,6 +399,18 @@ export const cancelOrder = async (orderId) => {
 		type: "order",
 		data: { orderId: order._id },
 	});
+
+	// Send notification to user
+	sendNotification(
+		order.userId,
+		"Order cancelled",
+		"Your order has been cancelled",
+	);
+	sendPushToUser(
+		order.userId,
+		"Order cancelled",
+		"Your order has been cancelled",
+	);
 
 	order.status = "cancelled";
 	await order.save();
@@ -448,6 +477,11 @@ export const updatePaymentStatus = async (req, res) => {
 
 	emitOrderUpdate(order);
 	sendNotification(order.userId, "Payment successful, order confirmed");
+	sendPushToUser(
+		order.userId,
+		"Payment successful",
+		"Your order has been confirmed",
+	);
 
 	res.json(order);
 };
@@ -529,6 +563,18 @@ export const verifyDeliveryOTP = async (req, res) => {
 			amount: cookAmount,
 			reference: order._id.toString(),
 		});
+
+		sendNotification(
+			cook._id,
+			"Order Completed",
+			`You earned ₦${cookAmount.toFixed(2)} from an order!`,
+		);
+
+		sendPushToUser(
+			cook._id,
+			"Order Completed",
+			`You earned ₦${cookAmount.toFixed(2)} from an order!`,
+		);
 
 		res.json({
 			message: "Order completed successfully",

@@ -707,3 +707,50 @@ export const sendBulkNotification = async (req, res) => {
 		});
 	}
 };
+
+// Add to notificationController.js
+export const testPushToToken = async (req, res) => {
+	try {
+		const { token, title, body } = req.body;
+
+		if (!token) {
+			return res.status(400).json({ error: "Token is required" });
+		}
+
+		console.log("📤 Testing push to token:", token.substring(0, 50) + "...");
+
+		const message = {
+			token: token,
+			notification: {
+				title: title || "Test Notification",
+				body: body || "This is a test from your backend",
+			},
+			data: {
+				test: "true",
+				timestamp: Date.now().toString(),
+			},
+		};
+
+		const response = await admin.messaging().send(message);
+
+		console.log("✅ Push sent successfully:", response);
+
+		res.json({
+			success: true,
+			message: "Push sent successfully",
+			response: response,
+		});
+	} catch (error) {
+		console.error("❌ Push failed:", error.code, error.message);
+
+		res.status(500).json({
+			success: false,
+			error: error.message,
+			code: error.code,
+			suggestion:
+				error.code === "messaging/registration-token-not-registered"
+					? "Token is invalid - please regenerate on client"
+					: "Check Firebase configuration",
+		});
+	}
+};

@@ -94,6 +94,13 @@ export const requestPayout = async (req, res) => {
 			type: "cook",
 			data: { cookId: userId },
 		});
+
+		sendPushToUser(
+			userId,
+			"Payout Requested",
+			`Your payout request for ${amount} NGN has been received and is being processed.`,
+			{ amount },
+		);
 	} catch (err) {
 		console.error(
 			"Payout initiation error:",

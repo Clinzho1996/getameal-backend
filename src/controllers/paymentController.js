@@ -2,6 +2,7 @@
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
+import { sendPushToUser } from "../services/pushService.js";
 
 // Handle successful payment
 export const handleSuccessfulPayment = async (data) => {
@@ -41,6 +42,12 @@ export const handleSuccessfulPayment = async (data) => {
 		order.status = "confirmed";
 		order.paymentReference = data.reference;
 
+		sendPushToUser(
+			order.customerId,
+			"Payment Successful",
+			`Your payment for order ${order._id} was successful!`,
+			{ orderId: order._id.toString() },
+		);
 		await order.save();
 
 		console.log("✅ Payment applied via webhook:", order._id);
@@ -64,6 +71,13 @@ export const handleRefund = async (data) => {
 	cook.walletBalance -= order.totalAmount;
 	await cook.save();
 
+	sendPushToUser(
+		order.customerId,
+		"Payment Refunded",
+		`Your payment for order ${order._id} has been refunded.`,
+		{ orderId: order._id.toString() },
+	);
+	
 	await WalletTransaction.create({
 		cookId: cook._id,
 		type: "debit",
