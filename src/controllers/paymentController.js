@@ -39,23 +39,21 @@ export const handleSuccessfulPayment = async (data) => {
 			return;
 		}
 
-		// ✅ Update order first
+		// ✅ Update order
 		order.paymentStatus = "paid";
 		order.status = "confirmed";
 		order.paymentReference = data.reference;
-
 		await order.save();
+
 		console.log(`✅ Payment applied via webhook: ${order._id}`);
+		console.log(`👤 Customer ID: ${order.userId}`); // ✅ Use userId instead of customerId
 
 		// ✅ SEND PUSH NOTIFICATION AFTER ORDER IS SAVED
-		// Use await to ensure it completes (but don't block if it fails)
 		try {
-			console.log(
-				`📱 Attempting to send push to customer: ${order.customerId}`,
-			);
+			console.log(`📱 Attempting to send push to customer: ${order.userId}`);
 
 			const pushResult = await sendPushToUser(
-				order.customerId,
+				order.userId, // ✅ CHANGE THIS: Use userId instead of customerId
 				"Payment Successful",
 				`Your payment for order ${order._id} was successful!`,
 				{
@@ -81,8 +79,9 @@ export const handleSuccessfulPayment = async (data) => {
 				}
 			}
 
+			// Also create in-app notification
 			await sendNotification({
-				userId: order.customerId,
+				userId: order.userId, // ✅ Use userId here too
 				title: "Payment Successful",
 				body: `Your payment for order ${order._id} was successful!`,
 				type: "payment_success",
@@ -101,40 +100,67 @@ export const handleSuccessfulPayment = async (data) => {
 	} catch (error) {
 		console.error("Webhook processing error:", error.message);
 		console.error("Full error:", error);
-
-		// Re-throw to let webhook handler know it failed
 		throw error;
 	}
 };
 
 // Handle refund
 export const handleRefund = async (data) => {
-	const order = await Order.findOne({
-		paymentReference: data.transaction_reference,
-	});
-	if (!order) throw new Error("Order not found");
+	try {
+		const order = await Order.findOne({
+			paymentReference: data.transaction_reference,
+		});
 
-	order.paymentStatus = "refunded";
-	order.status = "cancelled";
-	await order.save();
+		if (!order) throw new Error("Order not found");
 
-	const cook = await User.findById(order.cookId);
-	cook.walletBalance -= order.totalAmount;
-	await cook.save();
+		order.paymentStatus = "refunded";
+		order.status = "cancelled";
+		await order.save();
 
-	await sendPushToUser(
-		order.customerId,
-		"Payment Refunded",
-		`Your payment for order ${order._id} has been refunded.`,
-		{ orderId: order._id.toString() },
-	);
+		// Update cook's wallet
+		const cook = await User.findById(order.cookId);
+		if (cook) {
+			cook.walletBalance = (cook.walletBalance || 0) - order.totalAmount;
+			await cook.save();
 
-	await WalletTransaction.create({
-		cookId: cook._id,
-		type: "debit",
-		amount: order.totalAmount,
-		reference: order._id.toString(),
-	});
+			await WalletTransaction.create({
+				userId: cook._id, // Make sure this matches your schema
+				type: "debit",
+				amount: order.totalAmount,
+				reason: `Refund for order ${order._id}`,
+				reference: order._id.toString(),
+			});
 
-	console.log(`Cook ${cook._id} debited: ${order.totalAmount}`);
+			console.log(`✅ Cook ${cook._id} debited: ${order.totalAmount}`);
+		}
+
+		// Send push notification to customer
+		try {
+			await sendPushToUser(
+				order.userId, // ✅ Use userId
+				"Payment Refunded",
+				`Your payment for order ${order._id} has been refunded.`,
+				{ orderId: order._id.toString() },
+			);
+
+			// Also create in-app notification
+			await sendNotification({
+				userId: order.userId,
+				title: "Payment Refunded",
+				body: `Your payment for order ${order._id} has been refunded.`,
+				type: "payment_refund",
+				data: { orderId: order._id.toString() },
+			});
+		} catch (pushError) {
+			console.error(
+				`❌ Push notification error for refund:`,
+				pushError.message,
+			);
+		}
+
+		console.log(`✅ Refund processed for order ${order._id}`);
+	} catch (error) {
+		console.error("Refund processing error:", error.message);
+		throw error;
+	}
 };
