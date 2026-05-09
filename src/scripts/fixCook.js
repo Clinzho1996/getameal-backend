@@ -1,76 +1,86 @@
-// backend/scripts/migratePushTokens.js
 import dotenv from "dotenv";
 import mongoose from "mongoose";
+import CookProfile from "../models/CookProfile.js";
 import User from "../models/User.js";
 
 dotenv.config();
 
-async function migratePushTokens() {
+const fixOldCooks = async () => {
 	try {
-		// Connect to MongoDB
-		await mongoose.connect(
-			"mongodb+srv://confidinho:Ochuko.1996@cluster0.g7vyqdc.mongodb.net/getameal?retryWrites=true&w=majority&appName=Cluster0",
-		);
-		console.log("✅ Connected to MongoDB");
+		await mongoose.connect(process.env.MONGODB_URI);
 
-		// Find all users without pushTokens field
-		const usersWithoutTokens = await User.find({
-			$or: [{ pushTokens: { $exists: false } }, { pushTokens: null }],
-		});
+		console.log("Connected to MongoDB");
 
-		console.log(
-			`📊 Found ${usersWithoutTokens.length} users missing pushTokens array`,
-		);
+		const cooks = await CookProfile.find({});
+		console.log(`Found ${cooks.length} cook profiles`);
 
-		let updated = 0;
-		let skipped = 0;
+		let updatedCount = 0;
 
-		for (const user of usersWithoutTokens) {
-			try {
-				// Add empty pushTokens array
-				user.pushTokens = [];
-				await user.save();
-				updated++;
+		for (const cook of cooks) {
+			let changed = false;
 
-				if (updated % 100 === 0) {
-					console.log(`✅ Migrated ${updated} users...`);
-				}
-			} catch (err) {
-				console.error(`❌ Failed to migrate user ${user._id}:`, err.message);
-				skipped++;
+			// Ensure userId exists and references a real user
+			const user = await User.findById(cook.userId);
+			if (!user) {
+				console.log(
+					`Cook ${cook._id} has invalid userId ${cook.userId}, skipping`,
+				);
+				continue;
+			}
+
+			// Fix isApproved (default false if undefined)
+			if (typeof cook.isApproved !== "boolean") {
+				cook.isApproved = false;
+				changed = true;
+			}
+
+			// Fix isAvailable (default true if undefined)
+			if (typeof cook.isAvailable !== "boolean") {
+				cook.isAvailable = true;
+				changed = true;
+			}
+
+			// Fix availablePickup (default true if undefined)
+			if (typeof cook.availablePickup !== "boolean") {
+				cook.availablePickup = true;
+				changed = true;
+			}
+
+			// Fix schedule (must be array)
+			if (!Array.isArray(cook.schedule)) {
+				cook.schedule = [];
+				changed = true;
+			}
+
+			// Fix location (if missing, use user's location if available)
+			if (!cook.location && user.location) {
+				cook.location = {
+					type: "Point",
+					coordinates: user.location.coordinates || [0, 0],
+					address: user.location.address || "",
+				};
+				changed = true;
+			}
+
+			// Set availableForCooking if missing
+			if (!cook.availableForCooking) {
+				cook.availableForCooking = new Date();
+				changed = true;
+			}
+
+			if (changed) {
+				await cook.save();
+				updatedCount++;
+				console.log(`Updated cook profile ${cook._id}`);
 			}
 		}
 
-		console.log("\n🎉 Migration Complete!");
-		console.log(`✅ Updated: ${updated} users`);
-		console.log(`⏭️ Skipped: ${skipped} users`);
-
-		// ✅ FIX: Use countDocuments() instead of deprecated count()
-		const remaining = await User.countDocuments({
-			pushTokens: { $exists: false },
-		});
-		console.log(`📊 Remaining users without pushTokens: ${remaining}`);
-
-		// Also show users with empty arrays (have field but no tokens)
-		const usersWithEmptyTokens = await User.countDocuments({
-			pushTokens: { $exists: true, $size: 0 },
-		});
-		console.log(
-			`📊 Users with empty pushTokens array: ${usersWithEmptyTokens}`,
-		);
-
-		// Show users with actual tokens
-		const usersWithTokens = await User.countDocuments({
-			pushTokens: { $exists: true, $not: { $size: 0 } },
-		});
-		console.log(`📊 Users with registered push tokens: ${usersWithTokens}`);
-	} catch (error) {
-		console.error("❌ Migration failed:", error);
-	} finally {
+		console.log(`Finished. Updated ${updatedCount} cook profiles.`);
 		await mongoose.disconnect();
-		console.log("🔌 Disconnected from MongoDB");
+	} catch (err) {
+		console.error("Error fixing cook profiles:", err);
+		process.exit(1);
 	}
-}
+};
 
-// Run the migration
-migratePushTokens();
+fixOldCooks();
