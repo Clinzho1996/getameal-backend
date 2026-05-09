@@ -1,5 +1,6 @@
 import axios from "axios";
 import CookProfile from "../models/CookProfile.js";
+import { sendPushToUser } from "../services/pushService.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
 
 export const getBanks = async (req, res) => {
@@ -95,6 +96,15 @@ export const addCookBankAccount = async (req, res) => {
 			type: "cook",
 			data: { cookId: cook._id },
 		});
+
+		await sendPushToUser(
+			userId,
+			"Bank Account Added",
+			`Your bank account ending with ${accountNumber.slice(
+				-4,
+			)} has been added successfully.`,
+			{ accountNumber: `****${accountNumber.slice(-4)}` },
+		);
 	} catch (error) {
 		res.status(500).json({
 			message: "Failed to add bank account",
@@ -143,6 +153,15 @@ export const updateCookBankAccount = async (req, res) => {
 			data: { cookId: cook._id },
 		});
 
+		await sendPushToUser(
+			userId,
+			"Bank Account Updated",
+			`Your bank account ending with ${accountNumber.slice(
+				-4,
+			)} has been updated successfully.`,
+			{ accountNumber: `****${accountNumber.slice(-4)}` },
+		);
+
 		res.json({
 			message: "Bank account updated successfully",
 			bankDetails: cook.bankDetails,
@@ -178,6 +197,12 @@ export const deleteCookBankAccount = async (req, res) => {
 			data: { cookId: cook._id },
 		});
 
+		await sendPushToUser(
+			userId,
+			"Bank Account Removed",
+			`Your bank account has been removed successfully.`,
+			{},
+		);
 		res.json({
 			message: "Bank account removed successfully",
 		});

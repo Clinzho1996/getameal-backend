@@ -7,6 +7,7 @@ import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
+import { sendPushToUser } from "../services/pushService.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
 
 dotenv.config();
@@ -59,6 +60,11 @@ export const createMeal = async (req, res) => {
 			data: { mealId: meal._id },
 		});
 
+		await sendPushToUser(
+			req.user._id,
+			"New Meal Created",
+			`A new meal was created by ${req.user.fullName}`,
+		);
 		await meal.save();
 		res.status(201).json({ message: "Meal created successfully", meal });
 	} catch (error) {
@@ -177,6 +183,12 @@ export const updateMeal = async (req, res) => {
 			data: { mealId: meal._id },
 		});
 
+		await sendPushToUser(
+			req.user._id,
+			"Meal Updated",
+			`The meal "${meal.name}" was updated by ${req.user.fullName}`,
+		);
+
 		res.json({ message: "Meal updated", meal });
 	} catch (error) {
 		console.error(error);
@@ -204,6 +216,13 @@ export const deleteMeal = async (req, res) => {
 			type: "meal",
 			data: { mealId: meal._id },
 		});
+
+		await sendPushToUser(
+			req.user._id,
+			"Meal Deleted",
+			`The meal "${meal.name}" was deleted by ${req.user.fullName}`,
+		);
+
 		res.json({ message: "Meal deleted successfully" });
 	} catch (error) {
 		res.status(500).json({ message: error.message });
@@ -489,6 +508,12 @@ export const updateMealStatus = async (req, res) => {
 			data: { mealId: meal._id, status },
 		});
 
+		await sendPushToUser(
+			req.user._id,
+			"Meal Status Updated",
+			`The meal "${meal.name}" status was updated to "${status}" by ${req.user.fullName}`,
+		);
+
 		res.json({ message: "Meal status updated", meal });
 	} catch (error) {
 		res.status(500).json({ message: error.message });
@@ -599,6 +624,12 @@ export const adminCreateMeal = [
 				type: "meal",
 				data: { mealId: meal._id, cookId: cook._id },
 			});
+
+			await sendPushToUser(
+				req.user._id,
+				"New Meal Created",
+				`A new meal was created by ${req.user.fullName}`,
+			);
 
 			res
 				.status(201)

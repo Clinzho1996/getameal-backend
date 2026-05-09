@@ -1,5 +1,7 @@
 import { paystack } from "../config/paystack.js";
 import Order from "../models/Order.js";
+import { sendNotification } from "../services/notificationService.js";
+import { sendPushToUser } from "../services/pushService.js";
 
 // GET /api/admin/payments/stats
 export const getPaymentStats = async (req, res) => {
@@ -166,6 +168,21 @@ export const refundPayment = async (req, res) => {
 			transaction: order.paymentReference,
 			reason: reason || "Admin initiated refund",
 		});
+
+		await sendNotification({
+			userId: order.customerId,
+			title: "Refund Initiated",
+			body: `Your refund for order ${order._id} has been initiated. Reason: ${reason}`,
+			type: "refund_initiated",
+			data: { orderId: order._id.toString(), amount: order.totalAmount },
+		});
+
+		await sendPushToUser(
+			order.customerId,
+			"Refund Initiated",
+			`Your refund for order ${order._id} has been initiated. Reason: ${reason}`,
+			{ orderId: order._id.toString(), amount: order.totalAmount },
+		);
 
 		// Update order
 		order.paymentStatus = "refunded";

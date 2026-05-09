@@ -5,6 +5,8 @@ import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
+import { sendNotification } from "../services/notificationService.js";
+import { sendPushToUser } from "../services/pushService.js";
 
 // Helper for Resend
 let resendInstance = null;
@@ -237,6 +239,23 @@ export const addCookNote = async (req, res) => {
 		await cook.save();
 
 		res.status(200).json({ message: "Note added", notes: cook.notes });
+
+		// Optionally, send a push notification to the cook about the new note
+		await sendNotification({
+			userId: cook.userId,
+			title: "New Note from Admin",
+			body: "A new note has been added to your profile. Please check your account for details.",
+			type: "admin_note",
+			data: { cookId: cook._id.toString() },
+			// Optionally, you can include the note content in the notification data
+		});
+
+		await sendPushToUser(
+			cook.userId,
+			"New Note from Admin",
+			"A new note has been added to your profile. Please check your account for details.",
+			{ type: "admin_note", cookId: cook._id.toString() },
+		);
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ message: "Server error", error: error.message });
@@ -257,6 +276,52 @@ export const changeCookApprovalStatus = async (req, res) => {
 		else return res.status(400).json({ message: "Invalid action" });
 
 		await cook.save();
+
+		// Send push notification to cook about approval status change
+		if (cook.userId) {
+			const title =
+				action === "setActive"
+					? "Your Cook Profile is Approved!"
+					: "Your Cook Profile is Unapproved";
+			const body =
+				action === "setActive"
+					? "Congratulations! Your cook profile has been approved. You can now start cooking and receiving orders."
+					: "Your cook profile has been unapproved by the admin. Please contact support for more information.";
+
+			try {
+				await sendNotification({
+					userId: cook.userId._id,
+					title,
+					body,
+					type: action === "setActive" ? "cook_approved" : "cook_unapproved",
+					data: { cookId: cook._id.toString() },
+				});
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				console.error("Push error details:", pushError);
+				// Don't let push failure break the main flow
+				// Optionally, you could log this to a monitoring service
+			}
+
+			// Also send push to user if they have a userId
+			try {
+				await sendPushToUser(cook.userId._id, title, body, {
+					type: action === "setActive" ? "cook_approved" : "cook_unapproved",
+					cookId: cook._id.toString(),
+				});
+				// You can also log the result of the push notification if needed
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				console.error("Push error details:", pushError);
+				// Don't let push failure break the main flow
+			}
+		}
 
 		res.status(200).json({
 			message: `Cook ${action === "setActive" ? "activated" : "deactivated"} successfully`,
@@ -311,6 +376,53 @@ export const suspendCook = async (req, res) => {
 			return res.status(400).json({ message: "Invalid action" });
 		}
 
+		// Send push notification to cook about suspension status change
+		if (cook.userId) {
+			const title =
+				action === "suspend"
+					? "Your Account Has Been Suspended"
+					: "Your Account Has Been Reactivated";
+			const body =
+				action === "suspend"
+					? `Your account has been suspended by the admin for the following reason: ${reason}. Please contact support for more information.`
+					: "Your account has been reactivated by the admin. You can now access your account and start cooking again.";
+
+			try {
+				await sendNotification({
+					userId: cook.userId._id,
+					title,
+					body,
+					type:
+						action === "suspend" ? "account_suspended" : "account_reactivated",
+					data: { cookId: cook._id.toString(), reason },
+				});
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				console.error("Push error details:", pushError);
+				// Don't let push failure break the main flow
+			}
+
+			// Also send push to user if they have a userId
+			try {
+				await sendPushToUser(cook.userId._id, title, body, {
+					type:
+						action === "suspend" ? "account_suspended" : "account_reactivated",
+					cookId: cook._id.toString(),
+					reason,
+				});
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				console.error("Push error details:", pushError);
+				// Don't let push failure break the main flow
+			}
+		}
+
 		await cook.save();
 
 		res.status(200).json({
@@ -342,6 +454,47 @@ export const creditCookWallet = async (req, res) => {
 			reference: reason,
 			note,
 		});
+
+		// Send push notification to cook about wallet credit
+		if (cook.userId) {
+			const title = "Wallet Credited";
+			const body = `Your wallet has been credited with ${amount} NGN. Reason: ${reason}`;
+
+			try {
+				await sendNotification({
+					userId: cook.userId,
+					title,
+					body,
+					type: "wallet_credit",
+					data: { amount, reason },
+				});
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				console.error("Push error details:", pushError);
+				// Don't let push failure break the main flow
+			}
+
+			try {
+				await sendPushToUser(cook.userId, title, body, {
+					type: "wallet_credit",
+					amount,
+					reason,
+				});
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				console.error("Push error details:", pushError);
+				// Don't let push failure break the main flow
+				// Optionally, you could log this to a monitoring service
+				// but we won't throw an error here since the wallet credit was successful
+				// and we don't want to roll that back just because the notification failed
+			}
+		}
 
 		res.status(200).json({
 			message: "Cook wallet credited",

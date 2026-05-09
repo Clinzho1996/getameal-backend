@@ -9,6 +9,8 @@ import Review from "../models/Review.js";
 import Session from "../models/Session.js"; // tracks user login sessions
 import User from "../models/User.js";
 import Zone from "../models/Zone.js";
+import { sendNotification } from "../services/notificationService.js";
+import { sendPushToUser } from "../services/pushService.js";
 import { getResendInstance } from "../utils/emailService.js";
 import { getDateRanges } from "../utils/getDateRange.js";
 
@@ -456,6 +458,21 @@ export const cancelOrder = async (req, res) => {
 		}
 
 		order.status = "cancelled";
+
+		await sendNotification({
+			userId: order.userId,
+			title: "Order Cancelled",
+			body: "Your order has been cancelled",
+			type: "order",
+			data: { orderId: order._id },
+		});
+
+		await sendPushToUser(
+			order.userId,
+			"Order cancelled",
+			"Your order has been cancelled",
+			{ orderId: order._id.toString() },
+		);
 		await order.save();
 
 		res.json({ message: "Order cancelled successfully", order });
@@ -496,6 +513,21 @@ export const issueRefund = async (req, res) => {
 		order.refundReference = response.data.data.reference;
 		order.refundStatus = "pending";
 		await order.save();
+
+		await sendNotification({
+			userId: order.userId,
+			title: "Order Cancelled",
+			body: "Your order has been cancelled.",
+			type: "order_cancelled",
+			data: { orderId: order._id.toString() },
+		});
+
+		await sendPushToUser(
+			order.userId,
+			"Order Cancelled",
+			"Your order has been cancelled.",
+			{ orderId: order._id.toString() },
+		);
 
 		res.json({
 			message: "Refund initiated. Awaiting confirmation.",
