@@ -30,7 +30,7 @@ const cookSchema = new mongoose.Schema(
 			accountName: String,
 			recipientCode: String,
 		},
-		isApproved: { type: Boolean, default: false },
+		isApproved: { type: Boolean, default: true },
 		isAvailable: { type: Boolean, default: true },
 		isSuspended: { type: Boolean, default: false },
 	},
