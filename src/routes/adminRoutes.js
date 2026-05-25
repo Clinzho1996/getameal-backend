@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 import {
 	addOrUpdateZone,
 	addTeamMember,
@@ -62,6 +63,7 @@ import adminOnly from "../middleware/admin.js";
 import protect from "../middleware/auth.js";
 import { seedMealReviews } from "../scripts/seedMeals.js";
 
+const upload = multer({ dest: "uploads/" });
 const router = express.Router();
 
 // Become a cook
@@ -131,7 +133,18 @@ router.get("/payments/:id", protect, adminOnly, getPaymentById);
 // Refund
 router.post("/payments/:id/refund", protect, adminOnly, refundPayment);
 
-router.post("/cooks/create", protect, adminOnly, adminCreateCook);
+router.post(
+	"/cooks/create",
+	protect,
+	adminOnly,
+	upload.fields([
+		{ name: "profilePhoto", maxCount: 1 },
+		{ name: "coverPhoto", maxCount: 1 },
+		{ name: "kitchenPhotos", maxCount: 3 },
+		{ name: "cacImage", maxCount: 1 },
+	]),
+	adminCreateCook,
+);
 // Fetch
 router.get("/cooks/:cookId", protect, adminOnly, getCookById);
 

@@ -1,3 +1,6 @@
+import cloudinary from "cloudinary";
+import dotenv from "dotenv";
+import fs from "fs";
 import { nanoid } from "nanoid";
 import { Resend } from "resend";
 import CookProfile from "../models/CookProfile.js";
@@ -7,6 +10,16 @@ import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 import { sendNotification } from "../services/notificationService.js";
 import { sendPushToUser } from "../services/pushService.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
+
+dotenv.config();
+
+// Configure Cloudinary
+cloudinary.v2.config({
+	cloud_name: process.env.CLOUD_NAME,
+	api_key: process.env.CLOUD_KEY,
+	api_secret: process.env.CLOUD_SECRET,
+});
 
 // Helper for Resend
 let resendInstance = null;
@@ -510,102 +523,442 @@ export const adminCreateCook = async (req, res) => {
 	const resend = getResendInstance();
 
 	try {
+		// Extract form-data fields
 		const {
 			email,
-			fullName,
+			firstName,
+			lastName,
 			phone,
+			cookDisplayName,
+			bio,
 			address,
+			latitude,
+			longitude,
 			experience,
 			startImmediately = true,
 			availableDate,
-			latitude,
-			longitude,
 			referralCode,
 			notifyUser = true,
+			kycInfo,
+			businessDetails,
+			bankDetails,
 		} = req.body;
 
-		if (!email || !fullName || !phone || !address || !experience) {
+		// Parse JSON strings if they come as strings
+		let parsedKycInfo = kycInfo;
+		let parsedBusinessDetails = businessDetails;
+		let parsedBankDetails = bankDetails;
+
+		try {
+			if (typeof kycInfo === "string") {
+				parsedKycInfo = JSON.parse(kycInfo);
+			}
+			if (typeof businessDetails === "string") {
+				parsedBusinessDetails = JSON.parse(businessDetails);
+			}
+			if (typeof bankDetails === "string") {
+				parsedBankDetails = JSON.parse(bankDetails);
+			}
+		} catch (parseError) {
 			return res.status(400).json({
-				message: "Email, full name, phone, address and experience are required",
+				message:
+					"Invalid JSON format in kycInfo, businessDetails, or bankDetails",
+				error: parseError.message,
+			});
+		}
+
+		// Validation
+		const requiredFields = [
+			"email",
+			"firstName",
+			"lastName",
+			"phone",
+			"cookDisplayName",
+			"address",
+			"experience",
+		];
+
+		const missingFields = requiredFields.filter((field) => !req.body[field]);
+		if (missingFields.length > 0) {
+			return res.status(400).json({
+				message: `Missing required fields: ${missingFields.join(", ")}`,
+			});
+		}
+
+		// Validate KYC info
+		if (!parsedKycInfo || parsedKycInfo.isRegistered === undefined) {
+			return res.status(400).json({
+				message: "KYC registration information is required",
+			});
+		}
+
+		// If not registered with KYC, business type is required
+		if (!parsedKycInfo.isRegistered && !parsedKycInfo.businessType) {
+			return res.status(400).json({
+				message: "Business type is required when not registered with KYC",
+			});
+		}
+
+		// Check for uploaded files
+		const files = req.files || {};
+
+		// Extract files based on multer configuration
+		const profilePhotoFile = files.profilePhoto ? files.profilePhoto[0] : null;
+		const coverPhotoFile = files.coverPhoto ? files.coverPhoto[0] : null;
+		const kitchenPhotoFiles = files.kitchenPhotos || [];
+		const cacImageFile = files.cacImage ? files.cacImage[0] : null;
+
+		// Validate required images for new cook creation
+		if (!profilePhotoFile) {
+			return res.status(400).json({ message: "Profile photo is required" });
+		}
+		if (!coverPhotoFile) {
+			return res.status(400).json({ message: "Cover photo is required" });
+		}
+		if (!kitchenPhotoFiles || kitchenPhotoFiles.length !== 3) {
+			return res.status(400).json({
+				message: "Exactly 3 kitchen photos are required",
+				received: kitchenPhotoFiles ? kitchenPhotoFiles.length : 0,
+			});
+		}
+
+		// If registered with KYC, CAC image is required
+		if (parsedKycInfo.isRegistered && !cacImageFile) {
+			return res.status(400).json({
+				message: "CAC image is required when registered with KYC",
 			});
 		}
 
 		// Check if user exists
 		let user = await User.findOne({ email });
-		let plainPassword = nanoid(10); // always generate a password
+		let plainPassword = null;
+		let isNewUser = false;
 
 		if (!user) {
 			// Create a new user
+			plainPassword = nanoid(10);
+			isNewUser = true;
+
 			user = await User.create({
 				email,
-				fullName,
+				firstName,
+				lastName,
+				fullName: `${firstName} ${lastName}`,
 				phone,
 				password: plainPassword,
 				role: "user",
 				isCook: true,
 			});
 		} else {
-			// Update existing user to isCook and reset password
+			// Update existing user
+			user.firstName = firstName;
+			user.lastName = lastName;
+			user.fullName = `${firstName} ${lastName}`;
+			user.phone = phone;
 			user.isCook = true;
-			user.password = plainPassword; // temporary password
+
+			// Only generate new password if specified or if user has no password
+			if (!user.password || req.body.generateNewPassword === "true") {
+				plainPassword = nanoid(10);
+				user.password = plainPassword;
+			}
+
 			await user.save();
 		}
 
-		// Create or update cook profile
+		// Upload images to Cloudinary
+		let profilePhotoUrl = null;
+		let coverPhotoUrl = null;
+		let kitchenPhotoUrls = [];
+		let cacImageUrl = null;
+
+		try {
+			// Upload profile photo
+			if (profilePhotoFile && profilePhotoFile.path) {
+				const result = await cloudinary.v2.uploader.upload(
+					profilePhotoFile.path,
+					{
+						folder: "getameal/cooks/profiles",
+						transformation: [{ width: 500, height: 500, crop: "fill" }],
+					},
+				);
+				profilePhotoUrl = result.secure_url;
+				if (fs.existsSync(profilePhotoFile.path)) {
+					fs.unlinkSync(profilePhotoFile.path);
+				}
+			}
+
+			// Upload cover photo
+			if (coverPhotoFile && coverPhotoFile.path) {
+				const result = await cloudinary.v2.uploader.upload(
+					coverPhotoFile.path,
+					{
+						folder: "getameal/cooks/covers",
+						transformation: [{ width: 1200, height: 400, crop: "fill" }],
+					},
+				);
+				coverPhotoUrl = result.secure_url;
+				if (fs.existsSync(coverPhotoFile.path)) {
+					fs.unlinkSync(coverPhotoFile.path);
+				}
+			}
+
+			// Upload kitchen photos
+			for (const file of kitchenPhotoFiles) {
+				if (file && file.path) {
+					const result = await cloudinary.v2.uploader.upload(file.path, {
+						folder: "getameal/cooks/kitchens",
+						transformation: [{ width: 800, height: 600, crop: "fill" }],
+					});
+					kitchenPhotoUrls.push(result.secure_url);
+					if (fs.existsSync(file.path)) {
+						fs.unlinkSync(file.path);
+					}
+				}
+			}
+
+			// Upload CAC image if provided
+			if (cacImageFile && cacImageFile.path) {
+				const result = await cloudinary.v2.uploader.upload(cacImageFile.path, {
+					folder: "getameal/cooks/cac",
+				});
+				cacImageUrl = result.secure_url;
+				if (fs.existsSync(cacImageFile.path)) {
+					fs.unlinkSync(cacImageFile.path);
+				}
+			}
+		} catch (uploadError) {
+			console.error("Image upload error:", uploadError);
+			return res.status(500).json({
+				message: "Failed to upload images",
+				error: uploadError.message,
+			});
+		}
+
+		// Create or update cook profile with new schema
 		let cookProfile = await CookProfile.findOne({ userId: user._id });
-		if (!cookProfile) {
-			cookProfile = await CookProfile.create({
-				userId: user._id,
-				cookName: fullName,
-				phone,
-				cookAddress: address,
-				cookingExperience: experience,
-				availablePickup: true,
-				schedule: startImmediately
+
+		const cookProfileData = {
+			userId: user._id,
+			firstName,
+			lastName,
+			phone,
+			email,
+			cookDisplayName,
+			profilePhoto: profilePhotoUrl,
+			coverPhoto: coverPhotoUrl,
+			bio:
+				bio ||
+				`${cookDisplayName} - Professional cook with ${experience} of experience.`,
+			cookAddress: address,
+			cookingExperience: experience,
+			availablePickup: true,
+			schedule:
+				startImmediately === "true" || startImmediately === true
 					? ["Immediate"]
 					: availableDate
 						? [availableDate]
 						: [],
-				isApproved: true,
-				isAvailable: true,
-				location:
-					latitude && longitude
-						? {
-								type: "Point",
-								coordinates: [parseFloat(longitude), parseFloat(latitude)],
-								address,
-							}
-						: undefined,
-				availableForCooking: startImmediately ? new Date() : availableDate,
-			});
+			isApproved: true, // Admin created, so approved by default
+			isAvailable: true,
+			kycInfo: {
+				isRegistered: parsedKycInfo.isRegistered,
+				businessType: parsedKycInfo.businessType || null,
+				cacImage: cacImageUrl,
+			},
+			businessDetails: parsedBusinessDetails || {
+				cac: {
+					isRegistered: parsedKycInfo.isRegistered,
+					registrationNumber: parsedKycInfo.isRegistered
+						? parsedBusinessDetails?.cac?.registrationNumber || null
+						: null,
+					certificateImage: parsedKycInfo.isRegistered
+						? parsedBusinessDetails?.cac?.certificateImage || null
+						: null,
+				},
+				cookType: parsedKycInfo.isRegistered
+					? "registered_business"
+					: parsedKycInfo.businessType || "individual",
+			},
+			kitchenPhotos: kitchenPhotoUrls,
+			location:
+				latitude && longitude
+					? {
+							type: "Point",
+							coordinates: [parseFloat(longitude), parseFloat(latitude)],
+							address: address,
+						}
+					: undefined,
+			availableForCooking:
+				startImmediately === "true" || startImmediately === true
+					? new Date()
+					: availableDate
+						? new Date(availableDate)
+						: null,
+		};
+
+		// Add bank details if provided
+		if (
+			parsedBankDetails &&
+			parsedBankDetails.accountNumber &&
+			parsedBankDetails.bankCode
+		) {
+			try {
+				// Verify bank account with Paystack
+				const response = await axios.get(
+					`https://api.paystack.co/bank/resolve?account_number=${parsedBankDetails.accountNumber}&bank_code=${parsedBankDetails.bankCode}`,
+					{
+						headers: {
+							Authorization: `Bearer ${process.env.PAYSTACK_SECRET}`,
+						},
+					},
+				);
+
+				const { account_name } = response.data.data;
+
+				cookProfileData.bankDetails = {
+					accountNumber: parsedBankDetails.accountNumber,
+					bankCode: parsedBankDetails.bankCode,
+					bankName: parsedBankDetails.bankName,
+					accountName: account_name,
+				};
+			} catch (error) {
+				console.error("Bank account verification failed:", error.message);
+				// Don't fail the creation, just log the error
+			}
+		}
+
+		if (!cookProfile) {
+			cookProfile = await CookProfile.create(cookProfileData);
+		} else {
+			// Update existing profile
+			await CookProfile.updateOne(
+				{ userId: user._id },
+				{ $set: cookProfileData },
+			);
+			cookProfile = await CookProfile.findOne({ userId: user._id });
+		}
+
+		// Update user's profile image
+		if (profilePhotoUrl) {
+			user.profileImage = profilePhotoUrl;
+			await user.save();
 		}
 
 		// Send email to user if notifyUser
-		if (notifyUser) {
+		if (notifyUser === "true" || notifyUser === true) {
 			const subject = "Your Cook Profile Has Been Created!";
 			const message = `
-        <p>Hello ${fullName},</p>
-        <p>Your cook profile has been created by admin.</p>
-        <p>Your login password: <strong>${plainPassword}</strong></p>
-        <p>Address: ${address}</p>
-        <p>Experience: ${experience}</p>
-      `;
+				<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+					<h2 style="color: #4CAF50;">Welcome to GetAMeal, ${firstName}! 🎉</h2>
+					
+					<p>Your cook profile has been created by the admin. You're now ready to start cooking and earning!</p>
+					
+					${
+						isNewUser || plainPassword
+							? `
+					<div style="background-color: #f4f4f4; padding: 15px; border-radius: 5px; margin: 20px 0;">
+						<h3 style="margin-top: 0;">Your Login Credentials:</h3>
+						<p><strong>Email:</strong> ${email}</p>
+						<p><strong>Password:</strong> <code style="background-color: #e0e0e0; padding: 3px 8px; border-radius: 3px;">${plainPassword}</code></p>
+						<p style="color: #ff6b6b; font-size: 14px;">⚠️ Please change your password after first login for security.</p>
+					</div>
+					`
+							: ""
+					}
+					
+					<div style="margin: 20px 0;">
+						<h3>Your Cook Profile Details:</h3>
+						<ul style="list-style: none; padding: 0;">
+							<li><strong>Display Name:</strong> ${cookDisplayName}</li>
+							<li><strong>Kitchen Address:</strong> ${address}</li>
+							<li><strong>Experience:</strong> ${experience}</li>
+							<li><strong>KYC Status:</strong> ${parsedKycInfo.isRegistered ? "✓ Registered" : "Pending"}</li>
+						</ul>
+					</div>
+					
+					<div style="margin: 30px 0; text-align: center;">
+						<a href="${process.env.FRONTEND_URL}/login" style="background-color: #4CAF50; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block;">
+							Login to Your Account
+						</a>
+					</div>
+					
+					<p>Once logged in, you can:</p>
+					<ul>
+						<li>Create and manage your meals</li>
+						<li>View orders from customers</li>
+						<li>Update your profile and bank details</li>
+						<li>Track your earnings</li>
+					</ul>
+					
+					<p style="margin-top: 30px; font-size: 12px; color: #777;">
+						If you have any questions, please contact our support team.
+					</p>
+				</div>
+			`;
 
-			await resend.emails.send({
-				from: process.env.EMAIL_FROM,
-				to: email,
-				subject,
-				html: message,
-			});
+			try {
+				await resend.emails.send({
+					from: process.env.EMAIL_FROM,
+					to: email,
+					subject,
+					html: message,
+				});
+			} catch (emailError) {
+				console.error("Failed to send email:", emailError);
+				// Don't fail the creation if email fails
+			}
 		}
+
+		// Create admin notification
+		await createAdminNotification({
+			title: "New Cook Created by Admin",
+			body: `Admin created a new cook profile for ${firstName} ${lastName}`,
+			type: "cook",
+			data: {
+				cookId: cookProfile._id,
+				userId: user._id,
+			},
+		});
 
 		res.status(201).json({
 			message: "Cook profile created successfully",
-			user: { id: user._id, email: user.email, fullName: user.fullName },
-			cookProfile,
+			user: {
+				id: user._id,
+				email: user.email,
+				fullName: user.fullName,
+				isNewUser,
+			},
+			cookProfile: {
+				id: cookProfile._id,
+				cookDisplayName: cookProfile.cookDisplayName,
+				isApproved: cookProfile.isApproved,
+				kycStatus: cookProfile.kycInfo?.isRegistered ? "registered" : "pending",
+				profilePhoto: cookProfile.profilePhoto,
+				coverPhoto: cookProfile.coverPhoto,
+				kitchenPhotos: cookProfile.kitchenPhotos,
+			},
+			...(plainPassword && { temporaryPassword: plainPassword }), // Only include if generated
 		});
 	} catch (error) {
 		console.error("Admin create cook error:", error);
-		res.status(500).json({ message: "Server error", error: error.message });
+
+		// Clean up any uploaded files if there was an error
+		if (req.files) {
+			for (const field in req.files) {
+				if (Array.isArray(req.files[field])) {
+					for (const file of req.files[field]) {
+						if (file && file.path && fs.existsSync(file.path)) {
+							fs.unlinkSync(file.path);
+						}
+					}
+				}
+			}
+		}
+
+		res.status(500).json({
+			message: "Failed to create cook profile",
+			error: error.message,
+		});
 	}
 };
