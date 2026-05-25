@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 import {
 	addCookBankAccount,
 	deleteCookBankAccount,
@@ -8,15 +9,29 @@ import {
 	becomeCook,
 	getAllCooks,
 	getCookById,
+	getCookKYCStatus,
 	referCook,
 	updateCookProfile,
 } from "../controllers/cookController.js";
 import protect from "../middleware/auth.js";
 
+const upload = multer({ dest: "uploads/" });
+
 const router = express.Router();
 
 // Become a cook
-router.post("/become", protect, becomeCook);
+router.post(
+	"/become",
+	protect,
+	upload.fields([
+		{ name: "profilePhoto", maxCount: 1 },
+		{ name: "coverPhoto", maxCount: 1 },
+		{ name: "kitchenPhotos", maxCount: 3 },
+		{ name: "cacImage", maxCount: 1 },
+	]),
+	becomeCook,
+);
+router.get("/kyc-status", protect, getCookKYCStatus);
 router.post("/referral", protect, referCook); // New referral route
 router.post("/bank", protect, addCookBankAccount);
 router.put("/bank", protect, updateCookBankAccount);
