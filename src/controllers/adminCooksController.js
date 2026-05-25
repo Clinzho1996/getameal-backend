@@ -956,7 +956,7 @@ export const adminCreateCook = async (req, res) => {
 					: availableDate
 						? [availableDate]
 						: [],
-			isApproved: true, // Admin created, so approved by default
+			isApproved: true,
 			isAvailable: true,
 			kycInfo: {
 				isRegistered: parsedKycInfo.isRegistered,

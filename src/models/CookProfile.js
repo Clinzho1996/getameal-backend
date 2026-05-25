@@ -62,7 +62,6 @@ const cookSchema = new mongoose.Schema(
 		kitchenPhotos: [{ type: String }], // Array of 3 image URLs/paths
 
 		// Existing fields
-		cookingExperience: String,
 		availableForCooking: Date,
 		rating: { type: Number, default: 0 },
 		reviewsCount: { type: Number, default: 0 },

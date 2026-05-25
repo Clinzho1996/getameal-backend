@@ -50,9 +50,7 @@ export const getAllCooks = async (req, res) => {
 	try {
 		const cooks = await User.find({
 			$or: [{ role: "cook" }, { isCook: true }],
-		}).select(
-			"_id fullName profileImage cookAddress cookingExperience availableForCooking",
-		);
+		}).select("_id fullName profileImage cookAddress  availableForCooking");
 
 		const cookIds = cooks.map((c) => c._id);
 
@@ -118,7 +116,6 @@ export const becomeCook = async (req, res) => {
 			address,
 			latitude,
 			longitude,
-			experience,
 			startImmediately,
 			availableDate,
 			referralCode,
@@ -162,7 +159,6 @@ export const becomeCook = async (req, res) => {
 			"email",
 			"cookDisplayName",
 			"address",
-			"experience",
 		];
 
 		const missingFields = requiredFields.filter((field) => !req.body[field]);
@@ -321,7 +317,6 @@ export const becomeCook = async (req, res) => {
 			coverPhoto: coverPhotoUrl,
 			bio: bio || "",
 			cookAddress: address,
-			cookingExperience: experience,
 			availablePickup: true,
 			schedule:
 				startImmediately === "true" || startImmediately === true
