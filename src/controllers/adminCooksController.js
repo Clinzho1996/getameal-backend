@@ -81,16 +81,16 @@ export const getCookStats = async (req, res) => {
 export const getAllCooks = async (req, res) => {
 	try {
 		const {
-			status, // active / inactive
-			verification, // pending / verified
-			city, // filter by city (address field)
-			sortBy, // newest / oldest / mostOrders / highestRating / lastActive
+			status,
+			verification,
+			city,
+			sortBy,
 			dateFrom,
 			dateTo,
-			isAvailable, // true / false
+			isAvailable,
+			kycStatus,
 		} = req.query;
 
-		// Build filter dynamically
 		const filter = {};
 
 		if (status) {
@@ -101,8 +101,11 @@ export const getAllCooks = async (req, res) => {
 			filter.isApproved = verification === "verified";
 		}
 
+		if (kycStatus) {
+			filter["kycInfo.isRegistered"] = kycStatus === "registered";
+		}
+
 		if (city) {
-			// Case-insensitive substring match on address
 			filter["location.address"] = { $regex: city, $options: "i" };
 		}
 
@@ -114,7 +117,6 @@ export const getAllCooks = async (req, res) => {
 		if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
 		if (dateTo) filter.createdAt.$lte = new Date(dateTo);
 
-		// Sorting
 		const sort = {};
 		switch (sortBy) {
 			case "newest":
@@ -136,29 +138,110 @@ export const getAllCooks = async (req, res) => {
 				sort.createdAt = -1;
 		}
 
-		// Fetch cooks
 		const cooks = await CookProfile.find(filter)
 			.sort(sort)
-			.populate("userId", "fullName email phone profileImage");
+			.populate("userId", "fullName email phone profileImage isSuspended");
 
-		// Format response
-		const data = cooks.map((cook) => ({
-			cookId: cook._id,
-			name: cook.cookName,
-			phone: cook.phone,
-			email: cook.email,
-			profileImage: cook.profileImage,
-			location: cook.location,
-			isAvailable: cook.isAvailable,
-			isApproved: cook.isApproved,
-			rating: cook.rating,
-			ordersCount: cook.ordersCount,
-			walletBalance: cook.walletBalance,
-			createdAt: cook.createdAt,
-			updatedAt: cook.updatedAt,
-		}));
+		const data = cooks.map((cook) => {
+			// Get the best available name
+			let firstName = cook.firstName;
+			let lastName = cook.lastName;
+			let fullName = "";
 
-		res.status(200).json({ cooks: data });
+			if (
+				firstName &&
+				firstName !== "Unknown" &&
+				lastName &&
+				lastName !== "Cook"
+			) {
+				fullName = `${firstName} ${lastName}`;
+			} else if (cook.cookDisplayName && cook.cookDisplayName !== "undefined") {
+				fullName = cook.cookDisplayName;
+			} else if (cook.cookName) {
+				fullName = cook.cookName;
+			} else if (cook.userId?.fullName) {
+				fullName = cook.userId.fullName;
+			} else {
+				fullName = "Chef";
+			}
+
+			// Get the best available display name
+			const displayName =
+				cook.cookDisplayName && cook.cookDisplayName !== "undefined"
+					? cook.cookDisplayName
+					: cook.cookName || fullName;
+
+			// Get the best available bio
+			let bio = cook.bio;
+			if (!bio || bio.includes("undefined")) {
+				bio = `${displayName} - ${cook.cookingExperience || "professional"} of cooking experience. Specializing in delicious home-cooked meals.`;
+			}
+
+			return {
+				cookId: cook._id,
+				userId: cook.userId?._id,
+				firstName: firstName !== "Unknown" ? firstName : null,
+				lastName: lastName !== "Cook" ? lastName : null,
+				fullName: fullName,
+				cookDisplayName: displayName,
+				email:
+					cook.email && cook.email !== "undefined"
+						? cook.email
+						: cook.userId?.email,
+				phone:
+					cook.phone && cook.phone !== "undefined"
+						? cook.phone
+						: cook.userId?.phone,
+				bio: bio,
+				profilePhoto:
+					cook.profilePhoto ||
+					cook.userId?.profileImage?.url ||
+					cook.userId?.profileImage,
+				coverPhoto: cook.coverPhoto,
+				kitchenPhotos:
+					cook.kitchenPhotos && cook.kitchenPhotos.length > 0
+						? cook.kitchenPhotos
+						: [],
+				location: cook.location,
+				address: cook.cookAddress,
+				experience: cook.cookingExperience,
+				isAvailable: cook.isAvailable,
+				isApproved: cook.isApproved,
+				availableForCooking: cook.availableForCooking,
+				schedule: cook.schedule || [],
+				kycInfo: cook.kycInfo || {
+					isRegistered: false,
+					businessType: "individual",
+				},
+				businessDetails: cook.businessDetails || {
+					cac: { isRegistered: false },
+					cookType: "individual",
+				},
+				bankDetails: cook.bankDetails || null,
+				rating: cook.rating || 0,
+				reviewsCount: cook.reviewsCount || 0,
+				ordersCount: cook.ordersCount || 0,
+				walletBalance: cook.walletBalance || 0,
+				createdAt: cook.createdAt,
+				updatedAt: cook.updatedAt,
+				user: cook.userId
+					? {
+							id: cook.userId._id,
+							fullName: cook.userId.fullName,
+							email: cook.userId.email,
+							phone: cook.userId.phone,
+							profileImage: cook.userId.profileImage,
+							isSuspended: cook.userId.isSuspended,
+						}
+					: null,
+			};
+		});
+
+		res.status(200).json({
+			success: true,
+			count: data.length,
+			cooks: data,
+		});
 	} catch (error) {
 		console.error(error);
 		res.status(500).json({ message: "Server error", error: error.message });
@@ -170,24 +253,25 @@ export const getCookById = async (req, res) => {
 	try {
 		const { cookId } = req.params;
 
-		// Get the cook profile and populate user info
+		// Get the cook profile with new schema and populate user info
 		const cook = await CookProfile.findById(cookId).populate(
 			"userId",
-			"fullName email phone profileImage isSuspended suspensionReason suspensionNote",
+			"fullName email phone profileImage isSuspended suspensionReason suspensionNote role",
 		);
 
 		if (!cook) {
 			return res.status(404).json({ message: "Cook not found" });
 		}
 
-		// Get meals created by this cook
-		const meals = await Meal.find({ cookId: cook.userId._id }) // match the User ID
+		// Get meals created by this cook (using the cook's userId which references the User)
+		const meals = await Meal.find({ cookId: cook.userId?._id || cook.userId })
 			.select(
-				"name description price images category status portionsRemaining createdAt",
+				"name description price images category status portionsRemaining portionsTotal createdAt cookingDate pickupWindow deliveryRegions quantityLabel unitsPerQuantity",
 			)
-			.sort({ createdAt: -1 });
+			.sort({ createdAt: -1 })
+			.populate("category", "name image");
 
-		// Format meals if needed
+		// Format meals with complete information
 		const formattedMeals = meals.map((meal) => ({
 			_id: meal._id,
 			name: meal.name,
@@ -197,13 +281,126 @@ export const getCookById = async (req, res) => {
 			images: meal.images || [],
 			status: meal.status,
 			portionsRemaining: meal.portionsRemaining,
+			portionsTotal: meal.portionsTotal,
+			quantityLabel: meal.quantityLabel,
+			unitsPerQuantity: meal.unitsPerQuantity,
+			cookingDate: meal.cookingDate,
+			pickupWindow: meal.pickupWindow,
+			deliveryRegions: meal.deliveryRegions,
 			createdAt: meal.createdAt,
 		}));
 
+		// Calculate additional stats
+		const totalRevenue = await Order.aggregate([
+			{
+				$match: {
+					cookId: cook.userId?._id || cook.userId,
+					paymentStatus: "completed",
+				},
+			},
+			{ $group: { _id: null, total: { $sum: "$totalAmount" } } },
+		]);
+
+		// Get recent orders
+		const recentOrders = await Order.find({
+			cookId: cook.userId?._id || cook.userId,
+		})
+			.sort({ createdAt: -1 })
+			.limit(10)
+			.populate("userId", "fullName email phone")
+			.select("orderNumber totalAmount status paymentStatus createdAt");
+
+		// Format the complete cook response
+		const cookData = {
+			// Basic Info
+			cookId: cook._id,
+			userId: cook.userId?._id,
+
+			// Personal Information
+			firstName: cook.firstName,
+			lastName: cook.lastName,
+			fullName: `${cook.firstName} ${cook.lastName}`,
+			cookDisplayName: cook.cookDisplayName,
+			email: cook.email,
+			phone: cook.phone,
+			bio: cook.bio,
+
+			// Images
+			profilePhoto: cook.profilePhoto,
+			coverPhoto: cook.coverPhoto,
+			kitchenPhotos: cook.kitchenPhotos,
+
+			// Location Information
+			location: cook.location,
+			address: cook.cookAddress,
+			coordinates: cook.location?.coordinates || null,
+
+			// Professional Details
+			experience: cook.cookingExperience,
+			availablePickup: cook.availablePickup,
+			schedule: cook.schedule,
+			availableForCooking: cook.availableForCooking,
+
+			// Status Flags
+			isAvailable: cook.isAvailable,
+			isApproved: cook.isApproved,
+			isSuspended: cook.userId?.isSuspended || false,
+			suspensionReason: cook.userId?.suspensionReason,
+			suspensionNote: cook.userId?.suspensionNote,
+
+			// KYC & Compliance
+			kycInfo: {
+				isRegistered: cook.kycInfo?.isRegistered || false,
+				businessType: cook.kycInfo?.businessType,
+				cacImage: cook.kycInfo?.cacImage,
+				verifiedAt: cook.kycInfo?.verifiedAt,
+			},
+			businessDetails: {
+				cac: cook.businessDetails?.cac,
+				cookType: cook.businessDetails?.cookType,
+				taxId: cook.businessDetails?.taxId,
+				businessName: cook.businessDetails?.businessName,
+			},
+
+			// Payment Information
+			bankDetails: cook.bankDetails,
+			walletBalance: cook.walletBalance,
+
+			// Performance Metrics
+			rating: cook.rating,
+			reviewsCount: cook.reviewsCount,
+			ordersCount: cook.ordersCount,
+			totalRevenue: totalRevenue[0]?.total || 0,
+
+			// User Reference (from User model)
+			user: cook.userId
+				? {
+						id: cook.userId._id,
+						fullName: cook.userId.fullName,
+						email: cook.userId.email,
+						phone: cook.userId.phone,
+						profileImage: cook.userId.profileImage,
+						role: cook.userId.role,
+						isSuspended: cook.userId.isSuspended,
+					}
+				: null,
+
+			// Timestamps
+			createdAt: cook.createdAt,
+			updatedAt: cook.updatedAt,
+		};
+
 		res.status(200).json({
-			cook,
-			meals: formattedMeals,
-			totalMeals: formattedMeals.length,
+			success: true,
+			cook: cookData,
+			meals: {
+				list: formattedMeals,
+				total: formattedMeals.length,
+			},
+			recentOrders: {
+				list: recentOrders,
+				total: recentOrders.length,
+			},
 		});
 	} catch (error) {
 		console.error(error);
