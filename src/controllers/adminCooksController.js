@@ -174,7 +174,7 @@ export const getAllCooks = async (req, res) => {
 			// Get the best available bio
 			let bio = cook.bio;
 			if (!bio || bio.includes("undefined")) {
-				bio = `${displayName} - ${cook.cookingExperience || "professional"} of cooking experience. Specializing in delicious home-cooked meals.`;
+				bio = `${displayName} - . Specializing in delicious home-cooked meals.`;
 			}
 
 			return {
@@ -204,7 +204,6 @@ export const getAllCooks = async (req, res) => {
 						: [],
 				location: cook.location,
 				address: cook.cookAddress,
-				experience: cook.cookingExperience,
 				isAvailable: cook.isAvailable,
 				isApproved: cook.isApproved,
 				availableForCooking: cook.availableForCooking,
@@ -336,7 +335,6 @@ export const getCookById = async (req, res) => {
 			coordinates: cook.location?.coordinates || null,
 
 			// Professional Details
-			experience: cook.cookingExperience,
 			availablePickup: cook.availablePickup,
 			schedule: cook.schedule,
 			availableForCooking: cook.availableForCooking,
@@ -731,7 +729,6 @@ export const adminCreateCook = async (req, res) => {
 			address,
 			latitude,
 			longitude,
-			experience,
 			startImmediately = true,
 			availableDate,
 			referralCode,
@@ -772,7 +769,6 @@ export const adminCreateCook = async (req, res) => {
 			"phone",
 			"cookDisplayName",
 			"address",
-			"experience",
 		];
 
 		const missingFields = requiredFields.filter((field) => !req.body[field]);
@@ -944,11 +940,8 @@ export const adminCreateCook = async (req, res) => {
 			cookDisplayName,
 			profilePhoto: profilePhotoUrl,
 			coverPhoto: coverPhotoUrl,
-			bio:
-				bio ||
-				`${cookDisplayName} - Professional cook with ${experience} of experience.`,
+			bio: bio || `${cookDisplayName} - Professional cook`,
 			cookAddress: address,
-			cookingExperience: experience,
 			availablePickup: true,
 			schedule:
 				startImmediately === "true" || startImmediately === true
@@ -1069,7 +1062,6 @@ export const adminCreateCook = async (req, res) => {
 						<ul style="list-style: none; padding: 0;">
 							<li><strong>Display Name:</strong> ${cookDisplayName}</li>
 							<li><strong>Kitchen Address:</strong> ${address}</li>
-							<li><strong>Experience:</strong> ${experience}</li>
 							<li><strong>KYC Status:</strong> ${parsedKycInfo.isRegistered ? "✓ Registered" : "Pending"}</li>
 						</ul>
 					</div>
