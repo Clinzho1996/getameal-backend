@@ -474,7 +474,7 @@ export const addCookNote = async (req, res) => {
 export const changeCookApprovalStatus = async (req, res) => {
 	try {
 		const { cookId } = req.params;
-		const { action } = req.body; // setActive | setInactive | verifyKYC | rejectKYC
+		const { action } = req.body;
 
 		const cook = await CookProfile.findById(cookId).populate("userId");
 		if (!cook) return res.status(404).json({ message: "Cook not found" });
@@ -483,42 +483,36 @@ export const changeCookApprovalStatus = async (req, res) => {
 		let notificationTitle = "";
 		let notificationBody = "";
 
-		// Handle different actions
 		switch (action) {
 			case "setActive":
 				cook.isApproved = true;
 				cook.isAvailable = true;
 
-				// IMPORTANT: Check if CAC image exists and update KYC status
-				if (cook.kycInfo) {
-					// If CAC image exists, user should be marked as registered
-					if (cook.kycInfo.cacImage && !cook.kycInfo.isRegistered) {
-						cook.kycInfo.isRegistered = true;
-						cook.kycInfo.businessType = "business";
+				// Initialize kycInfo if it doesn't exist
+				if (!cook.kycInfo) {
+					cook.kycInfo = {};
+				}
 
-						// Also update businessDetails
-						if (!cook.businessDetails) cook.businessDetails = {};
-						if (!cook.businessDetails.cac) cook.businessDetails.cac = {};
-						cook.businessDetails.cac.isRegistered = true;
-						cook.businessDetails.cookType = "registered_business";
-					}
+				// FORCE SET KYC AS VERIFIED WHEN APPROVING
+				cook.kycInfo.verifiedAt = new Date();
+				cook.kycInfo.verifiedBy = req.user.id;
+				cook.kycInfo.status = "verified";
+				cook.kycInfo.submittedAt = cook.kycInfo.submittedAt || new Date();
 
-					// Mark KYC as verified
-					cook.kycInfo.verifiedAt = new Date();
-					cook.kycInfo.verifiedBy = req.user.id;
-					cook.kycInfo.status = "verified";
-					cook.kycInfo.submittedAt = cook.kycInfo.submittedAt || new Date();
+				// If CAC image exists, mark as registered
+				if (cook.kycInfo.cacImage) {
+					cook.kycInfo.isRegistered = true;
+					cook.kycInfo.businessType = "business";
+
+					// Update businessDetails
+					if (!cook.businessDetails) cook.businessDetails = {};
+					if (!cook.businessDetails.cac) cook.businessDetails.cac = {};
+					cook.businessDetails.cac.isRegistered = true;
+					cook.businessDetails.cookType = "registered_business";
 				} else {
-					// Initialize kycInfo if it doesn't exist
-					cook.kycInfo = {
-						isRegistered: false,
-						businessType: "individual",
-						cacImage: null,
-						submittedAt: new Date(),
-						verifiedAt: new Date(),
-						verifiedBy: req.user.id,
-						status: "verified",
-					};
+					// For individual cooks without CAC
+					cook.kycInfo.isRegistered = cook.kycInfo.isRegistered || false;
+					cook.kycInfo.businessType = cook.kycInfo.businessType || "individual";
 				}
 
 				// Update user role
@@ -549,7 +543,6 @@ export const changeCookApprovalStatus = async (req, res) => {
 					cook.kycInfo.isRegistered = true;
 					cook.kycInfo.businessType = "business";
 
-					// Update businessDetails
 					if (!cook.businessDetails) cook.businessDetails = {};
 					if (!cook.businessDetails.cac) cook.businessDetails.cac = {};
 					cook.businessDetails.cac.isRegistered = true;
@@ -599,13 +592,11 @@ export const changeCookApprovalStatus = async (req, res) => {
 					});
 		}
 
-		// Save the updated cook profile
 		await cook.save();
 
-		// Send notifications if user exists
+		// Send notifications
 		if (cook.userId) {
 			try {
-				// Send push notification
 				await sendPushToUser(
 					cook.userId._id,
 					notificationTitle,
@@ -618,10 +609,7 @@ export const changeCookApprovalStatus = async (req, res) => {
 					},
 				);
 			} catch (pushError) {
-				console.error(
-					`❌ Push notification error for cook ${cook._id}:`,
-					pushError.message,
-				);
+				console.error(`❌ Push notification error:`, pushError.message);
 			}
 		}
 
@@ -639,8 +627,7 @@ export const changeCookApprovalStatus = async (req, res) => {
 			},
 		});
 
-		// Prepare response with complete status
-		const responseData = {
+		res.status(200).json({
 			success: true,
 			message: `Cook ${statusMessage} successfully`,
 			status: cook.isApproved ? "approved" : "rejected",
@@ -655,24 +642,15 @@ export const changeCookApprovalStatus = async (req, res) => {
 					cacImage: cook.kycInfo?.cacImage || null,
 					submittedAt: cook.kycInfo?.submittedAt,
 					verifiedAt: cook.kycInfo?.verifiedAt,
-					rejectedAt: cook.kycInfo?.rejectedAt,
-					rejectionReason: cook.kycInfo?.rejectionReason,
-					status:
-						cook.kycInfo?.status ||
-						(cook.kycInfo?.verifiedAt ? "verified" : "pending"),
+					status: cook.kycInfo?.status || "verified",
 				},
 				businessDetails: cook.businessDetails,
 				updatedAt: cook.updatedAt,
 			},
-		};
-
-		res.status(200).json(responseData);
-	} catch (error) {
-		console.error("Error in changeCookApprovalStatus:", error);
-		res.status(500).json({
-			message: "Server error",
-			error: error.message,
 		});
+	} catch (error) {
+		console.error("Error:", error);
+		res.status(500).json({ message: "Server error", error: error.message });
 	}
 };
 

@@ -460,29 +460,67 @@ export const becomeCook = async (req, res) => {
 export const getCookKYCStatus = async (req, res) => {
 	try {
 		const userId = req.user.id;
-		const cookProfile = await CookProfile.findOne({ userId });
+		let cookProfile = await CookProfile.findOne({ userId });
 
 		if (!cookProfile) {
 			return res.status(404).json({ message: "Cook profile not found" });
 		}
 
-		// Ensure kycInfo exists with proper defaults
+		let needsUpdate = false;
+		const updates = {};
+
+		// FIX 1: If cook is approved but KYC not verified
+		if (
+			cookProfile.isApproved &&
+			(!cookProfile.kycInfo?.verifiedAt ||
+				cookProfile.kycInfo?.status !== "verified")
+		) {
+			updates["kycInfo.verifiedAt"] = new Date();
+			updates["kycInfo.status"] = "verified";
+			updates["kycInfo.submittedAt"] =
+				cookProfile.kycInfo?.submittedAt || cookProfile.createdAt;
+			needsUpdate = true;
+			console.log(`Will fix KYC status for approved cook ${cookProfile._id}`);
+		}
+
+		// FIX 2: If CAC image exists but isRegistered is false
+		if (cookProfile.kycInfo?.cacImage && !cookProfile.kycInfo?.isRegistered) {
+			updates["kycInfo.isRegistered"] = true;
+			updates["kycInfo.businessType"] = "business";
+			updates["businessDetails.cac.isRegistered"] = true;
+			updates["businessDetails.cookType"] = "registered_business";
+			needsUpdate = true;
+			console.log(`Will fix registration status for cook ${cookProfile._id}`);
+		}
+
+		// Apply fixes if needed
+		if (needsUpdate) {
+			await CookProfile.updateOne({ _id: cookProfile._id }, { $set: updates });
+			// Refresh the profile
+			cookProfile = await CookProfile.findOne({ userId });
+			console.log(`Applied KYC fixes for cook ${cookProfile._id}`);
+		}
+
+		// Ensure kycInfo exists
 		const kycInfo = cookProfile.kycInfo || {
 			isRegistered: false,
 			businessType: "individual",
 			cacImage: null,
 			submittedAt: null,
 			verifiedAt: null,
+			status: "pending",
 		};
 
 		// Ensure businessDetails exists
 		const businessDetails = cookProfile.businessDetails || {
 			cac: {
-				isRegistered: false,
+				isRegistered: kycInfo.isRegistered || false,
 				registrationNumber: null,
 				certificateImage: null,
 			},
-			cookType: "individual",
+			cookType: kycInfo.isRegistered
+				? "registered_business"
+				: kycInfo.businessType || "individual",
 			businessName: null,
 			taxId: null,
 		};
@@ -490,22 +528,25 @@ export const getCookKYCStatus = async (req, res) => {
 		// Calculate KYC completion status
 		const isKycComplete = () => {
 			if (kycInfo.isRegistered) {
-				// For registered businesses, check if CAC image and registration number exist
-				return !!(kycInfo.cacImage && businessDetails.cac?.registrationNumber);
+				return !!kycInfo.cacImage;
 			} else {
-				// For individuals, just need business type
 				return !!kycInfo.businessType;
 			}
 		};
 
-		// Determine KYC verification status
+		// Determine KYC verification status - PRIORITIZE verifiedAt
 		let kycVerificationStatus = "pending";
 		if (kycInfo.verifiedAt) {
 			kycVerificationStatus = "verified";
+		} else if (kycInfo.rejectedAt) {
+			kycVerificationStatus = "rejected";
 		} else if (kycInfo.submittedAt) {
 			kycVerificationStatus = "submitted";
-		} else {
-			kycVerificationStatus = "pending";
+		}
+
+		// If approved but status shows pending, override to verified
+		if (cookProfile.isApproved && kycVerificationStatus === "pending") {
+			kycVerificationStatus = "verified";
 		}
 
 		res.json({
@@ -515,7 +556,8 @@ export const getCookKYCStatus = async (req, res) => {
 				businessType: kycInfo.businessType || "individual",
 				cacImage: kycInfo.cacImage || null,
 				submittedAt: kycInfo.submittedAt || null,
-				verifiedAt: kycInfo.verifiedAt || null,
+				verifiedAt:
+					kycInfo.verifiedAt || (cookProfile.isApproved ? new Date() : null),
 				status: kycVerificationStatus,
 			},
 			businessDetails: {
