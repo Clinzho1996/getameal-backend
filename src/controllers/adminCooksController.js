@@ -474,70 +474,180 @@ export const addCookNote = async (req, res) => {
 export const changeCookApprovalStatus = async (req, res) => {
 	try {
 		const { cookId } = req.params;
-		const { action } = req.body; // setActive | setInactive
+		const { action } = req.body; // setActive | setInactive | verifyKYC | rejectKYC
 
 		const cook = await CookProfile.findById(cookId).populate("userId");
 		if (!cook) return res.status(404).json({ message: "Cook not found" });
 
-		if (action === "setActive") cook.isApproved = true;
-		else if (action === "setInactive") cook.isApproved = false;
-		else return res.status(400).json({ message: "Invalid action" });
+		let statusMessage = "";
+		let notificationTitle = "";
+		let notificationBody = "";
 
+		// Handle different actions
+		switch (action) {
+			case "setActive":
+				cook.isApproved = true;
+				cook.isAvailable = true;
+
+				// If approving, also mark KYC as verified if not already
+				if (cook.kycInfo && !cook.kycInfo.verifiedAt) {
+					if (!cook.kycInfo) cook.kycInfo = {};
+					cook.kycInfo.verifiedAt = new Date();
+					cook.kycInfo.verifiedBy = req.user.id;
+					cook.kycInfo.status = "verified";
+				}
+
+				// Update user role
+				if (cook.userId) {
+					await User.findByIdAndUpdate(cook.userId, { role: "cook" });
+				}
+
+				statusMessage = "activated";
+				notificationTitle = "✅ Cook Profile Approved!";
+				notificationBody =
+					"Congratulations! Your cook profile has been approved. You can now start creating meals and receiving orders. Your KYC has been verified.";
+				break;
+
+			case "setInactive":
+				cook.isApproved = false;
+				cook.isAvailable = false;
+				statusMessage = "deactivated";
+				notificationTitle = "⚠️ Cook Profile Deactivated";
+				notificationBody =
+					"Your cook profile has been deactivated by the admin. Please contact support for more information.";
+				break;
+
+			case "verifyKYC":
+				if (!cook.kycInfo) cook.kycInfo = {};
+				cook.kycInfo.verifiedAt = new Date();
+				cook.kycInfo.verifiedBy = req.user.id;
+				cook.kycInfo.status = "verified";
+				cook.kycInfo.verificationNotes = req.body.notes || null;
+
+				// Auto-approve if not already approved
+				if (!cook.isApproved && req.body.autoApprove !== false) {
+					cook.isApproved = true;
+					cook.isAvailable = true;
+					if (cook.userId) {
+						await User.findByIdAndUpdate(cook.userId, { role: "cook" });
+					}
+				}
+
+				statusMessage = "KYC verified";
+				notificationTitle = "📋 KYC Documents Verified";
+				notificationBody =
+					"Your KYC documents have been verified successfully! Your account is now active.";
+				break;
+
+			case "rejectKYC":
+				if (!cook.kycInfo) cook.kycInfo = {};
+				cook.kycInfo.rejectedAt = new Date();
+				cook.kycInfo.rejectedBy = req.user.id;
+				cook.kycInfo.rejectionReason =
+					req.body.reason || "Documents did not meet requirements";
+				cook.kycInfo.status = "rejected";
+
+				statusMessage = "KYC rejected";
+				notificationTitle = "❌ KYC Documents Rejected";
+				notificationBody = `Your KYC documents have been rejected. Reason: ${cook.kycInfo.rejectionReason}. Please resubmit your documents.`;
+				break;
+
+			default:
+				return res
+					.status(400)
+					.json({
+						message:
+							"Invalid action. Use: setActive, setInactive, verifyKYC, or rejectKYC",
+					});
+		}
+
+		// Save the updated cook profile
 		await cook.save();
 
-		// Send push notification to cook about approval status change
+		// Send notifications if user exists
 		if (cook.userId) {
-			const title =
-				action === "setActive"
-					? "Your Cook Profile is Approved!"
-					: "Your Cook Profile is Unapproved";
-			const body =
-				action === "setActive"
-					? "Congratulations! Your cook profile has been approved. You can now start cooking and receiving orders."
-					: "Your cook profile has been unapproved by the admin. Please contact support for more information.";
-
 			try {
-				await sendNotification({
-					userId: cook.userId._id,
-					title,
-					body,
-					type: action === "setActive" ? "cook_approved" : "cook_unapproved",
-					data: { cookId: cook._id.toString() },
-				});
+				// Send push notification
+				await sendPushToUser(
+					cook.userId._id,
+					notificationTitle,
+					notificationBody,
+					{
+						type: action,
+						cookId: cook._id.toString(),
+						isApproved: cook.isApproved,
+						kycStatus: cook.kycInfo?.status,
+					},
+				);
+
+				// Also send email notification if requested
+				if (req.body.sendEmail !== false) {
+					// You can add email sending logic here using your email service
+					console.log(`Email notification sent to ${cook.userId.email}`);
+				}
 			} catch (pushError) {
 				console.error(
 					`❌ Push notification error for cook ${cook._id}:`,
 					pushError.message,
 				);
-				console.error("Push error details:", pushError);
-				// Don't let push failure break the main flow
-				// Optionally, you could log this to a monitoring service
-			}
-
-			// Also send push to user if they have a userId
-			try {
-				await sendPushToUser(cook.userId._id, title, body, {
-					type: action === "setActive" ? "cook_approved" : "cook_unapproved",
-					cookId: cook._id.toString(),
-				});
-				// You can also log the result of the push notification if needed
-			} catch (pushError) {
-				console.error(
-					`❌ Push notification error for cook ${cook._id}:`,
-					pushError.message,
-				);
-				console.error("Push error details:", pushError);
 				// Don't let push failure break the main flow
 			}
 		}
 
-		res.status(200).json({
-			message: `Cook ${action === "setActive" ? "activated" : "deactivated"} successfully`,
-			status: cook.isApproved ? "approved" : "rejected",
+		// Create admin notification
+		await createAdminNotification({
+			title: `Cook ${action}`,
+			body: `Cook ${cook.cookDisplayName || cook.cookName} was ${statusMessage} by ${req.user.fullName}`,
+			type: "cook_approval",
+			data: {
+				cookId: cook._id,
+				userId: cook.userId?._id,
+				action,
+				isApproved: cook.isApproved,
+			},
 		});
+
+		// Prepare response with complete status
+		const responseData = {
+			success: true,
+			message: `Cook ${statusMessage} successfully`,
+			status: cook.isApproved ? "approved" : "rejected",
+			cook: {
+				id: cook._id,
+				cookDisplayName: cook.cookDisplayName || cook.cookName,
+				isApproved: cook.isApproved,
+				isAvailable: cook.isAvailable,
+				kycInfo: {
+					isRegistered: cook.kycInfo?.isRegistered || false,
+					status:
+						cook.kycInfo?.status ||
+						(cook.kycInfo?.verifiedAt ? "verified" : "pending"),
+					verifiedAt: cook.kycInfo?.verifiedAt,
+					rejectedAt: cook.kycInfo?.rejectedAt,
+					rejectionReason: cook.kycInfo?.rejectionReason,
+				},
+				businessDetails: cook.businessDetails,
+				updatedAt: cook.updatedAt,
+			},
+		};
+
+		// Add additional info based on action
+		if (action === "verifyKYC") {
+			responseData.kycVerified = true;
+			responseData.message =
+				"KYC documents verified and cook profile activated";
+		} else if (action === "rejectKYC") {
+			responseData.kycRejected = true;
+			responseData.rejectionReason = cook.kycInfo.rejectionReason;
+		}
+
+		res.status(200).json(responseData);
 	} catch (error) {
-		console.error(error);
-		res.status(500).json({ message: "Server error", error: error.message });
+		console.error("Error in changeCookApprovalStatus:", error);
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
 	}
 };
 

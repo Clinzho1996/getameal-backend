@@ -466,15 +466,76 @@ export const getCookKYCStatus = async (req, res) => {
 			return res.status(404).json({ message: "Cook profile not found" });
 		}
 
+		// Ensure kycInfo exists with proper defaults
+		const kycInfo = cookProfile.kycInfo || {
+			isRegistered: false,
+			businessType: "individual",
+			cacImage: null,
+			submittedAt: null,
+			verifiedAt: null,
+		};
+
+		// Ensure businessDetails exists
+		const businessDetails = cookProfile.businessDetails || {
+			cac: {
+				isRegistered: false,
+				registrationNumber: null,
+				certificateImage: null,
+			},
+			cookType: "individual",
+			businessName: null,
+			taxId: null,
+		};
+
+		// Calculate KYC completion status
+		const isKycComplete = () => {
+			if (kycInfo.isRegistered) {
+				// For registered businesses, check if CAC image and registration number exist
+				return !!(kycInfo.cacImage && businessDetails.cac?.registrationNumber);
+			} else {
+				// For individuals, just need business type
+				return !!kycInfo.businessType;
+			}
+		};
+
+		// Determine KYC verification status
+		let kycVerificationStatus = "pending";
+		if (kycInfo.verifiedAt) {
+			kycVerificationStatus = "verified";
+		} else if (kycInfo.submittedAt) {
+			kycVerificationStatus = "submitted";
+		} else {
+			kycVerificationStatus = "pending";
+		}
+
 		res.json({
-			kycInfo: cookProfile.kycInfo,
-			businessDetails: cookProfile.businessDetails,
-			isApproved: cookProfile.isApproved,
+			success: true,
+			kycInfo: {
+				isRegistered: kycInfo.isRegistered || false,
+				businessType: kycInfo.businessType || "individual",
+				cacImage: kycInfo.cacImage || null,
+				submittedAt: kycInfo.submittedAt || null,
+				verifiedAt: kycInfo.verifiedAt || null,
+				status: kycVerificationStatus,
+			},
+			businessDetails: {
+				cac: {
+					isRegistered: businessDetails.cac?.isRegistered || false,
+					registrationNumber: businessDetails.cac?.registrationNumber || null,
+					certificateImage: businessDetails.cac?.certificateImage || null,
+				},
+				cookType: businessDetails.cookType || "individual",
+				businessName: businessDetails.businessName || null,
+				taxId: businessDetails.taxId || null,
+			},
+			isApproved: cookProfile.isApproved || false,
 			requiresAdditionalDocs:
-				!cookProfile.kycInfo.isRegistered &&
-				cookProfile.kycInfo.businessType === "business",
+				!kycInfo.isRegistered && kycInfo.businessType === "business",
+			isKycComplete: isKycComplete(),
+			kycStatus: kycVerificationStatus,
 		});
 	} catch (error) {
+		console.error("Error fetching KYC status:", error);
 		res.status(500).json({ message: error.message });
 	}
 };
