@@ -489,12 +489,36 @@ export const changeCookApprovalStatus = async (req, res) => {
 				cook.isApproved = true;
 				cook.isAvailable = true;
 
-				// If approving, also mark KYC as verified if not already
-				if (cook.kycInfo && !cook.kycInfo.verifiedAt) {
-					if (!cook.kycInfo) cook.kycInfo = {};
+				// IMPORTANT: Check if CAC image exists and update KYC status
+				if (cook.kycInfo) {
+					// If CAC image exists, user should be marked as registered
+					if (cook.kycInfo.cacImage && !cook.kycInfo.isRegistered) {
+						cook.kycInfo.isRegistered = true;
+						cook.kycInfo.businessType = "business";
+
+						// Also update businessDetails
+						if (!cook.businessDetails) cook.businessDetails = {};
+						if (!cook.businessDetails.cac) cook.businessDetails.cac = {};
+						cook.businessDetails.cac.isRegistered = true;
+						cook.businessDetails.cookType = "registered_business";
+					}
+
+					// Mark KYC as verified
 					cook.kycInfo.verifiedAt = new Date();
 					cook.kycInfo.verifiedBy = req.user.id;
 					cook.kycInfo.status = "verified";
+					cook.kycInfo.submittedAt = cook.kycInfo.submittedAt || new Date();
+				} else {
+					// Initialize kycInfo if it doesn't exist
+					cook.kycInfo = {
+						isRegistered: false,
+						businessType: "individual",
+						cacImage: null,
+						submittedAt: new Date(),
+						verifiedAt: new Date(),
+						verifiedBy: req.user.id,
+						status: "verified",
+					};
 				}
 
 				// Update user role
@@ -519,10 +543,24 @@ export const changeCookApprovalStatus = async (req, res) => {
 
 			case "verifyKYC":
 				if (!cook.kycInfo) cook.kycInfo = {};
+
+				// Check if CAC image exists and update registration status
+				if (cook.kycInfo.cacImage) {
+					cook.kycInfo.isRegistered = true;
+					cook.kycInfo.businessType = "business";
+
+					// Update businessDetails
+					if (!cook.businessDetails) cook.businessDetails = {};
+					if (!cook.businessDetails.cac) cook.businessDetails.cac = {};
+					cook.businessDetails.cac.isRegistered = true;
+					cook.businessDetails.cookType = "registered_business";
+				}
+
 				cook.kycInfo.verifiedAt = new Date();
 				cook.kycInfo.verifiedBy = req.user.id;
 				cook.kycInfo.status = "verified";
 				cook.kycInfo.verificationNotes = req.body.notes || null;
+				cook.kycInfo.submittedAt = cook.kycInfo.submittedAt || new Date();
 
 				// Auto-approve if not already approved
 				if (!cook.isApproved && req.body.autoApprove !== false) {
@@ -579,18 +617,11 @@ export const changeCookApprovalStatus = async (req, res) => {
 						kycStatus: cook.kycInfo?.status,
 					},
 				);
-
-				// Also send email notification if requested
-				if (req.body.sendEmail !== false) {
-					// You can add email sending logic here using your email service
-					console.log(`Email notification sent to ${cook.userId.email}`);
-				}
 			} catch (pushError) {
 				console.error(
 					`❌ Push notification error for cook ${cook._id}:`,
 					pushError.message,
 				);
-				// Don't let push failure break the main flow
 			}
 		}
 
@@ -604,6 +635,7 @@ export const changeCookApprovalStatus = async (req, res) => {
 				userId: cook.userId?._id,
 				action,
 				isApproved: cook.isApproved,
+				kycVerified: cook.kycInfo?.verifiedAt ? true : false,
 			},
 		});
 
@@ -619,27 +651,20 @@ export const changeCookApprovalStatus = async (req, res) => {
 				isAvailable: cook.isAvailable,
 				kycInfo: {
 					isRegistered: cook.kycInfo?.isRegistered || false,
-					status:
-						cook.kycInfo?.status ||
-						(cook.kycInfo?.verifiedAt ? "verified" : "pending"),
+					businessType: cook.kycInfo?.businessType || "individual",
+					cacImage: cook.kycInfo?.cacImage || null,
+					submittedAt: cook.kycInfo?.submittedAt,
 					verifiedAt: cook.kycInfo?.verifiedAt,
 					rejectedAt: cook.kycInfo?.rejectedAt,
 					rejectionReason: cook.kycInfo?.rejectionReason,
+					status:
+						cook.kycInfo?.status ||
+						(cook.kycInfo?.verifiedAt ? "verified" : "pending"),
 				},
 				businessDetails: cook.businessDetails,
 				updatedAt: cook.updatedAt,
 			},
 		};
-
-		// Add additional info based on action
-		if (action === "verifyKYC") {
-			responseData.kycVerified = true;
-			responseData.message =
-				"KYC documents verified and cook profile activated";
-		} else if (action === "rejectKYC") {
-			responseData.kycRejected = true;
-			responseData.rejectionReason = cook.kycInfo.rejectionReason;
-		}
 
 		res.status(200).json(responseData);
 	} catch (error) {
