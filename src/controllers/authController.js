@@ -290,24 +290,21 @@ export const loginInit = async (req, res) => {
 
 		// Check if user account is suspended
 		if (user.status === "suspended") {
-			// Get the latest suspension note for better error message
 			const suspensionNote = user.notes?.find((n) =>
 				n.note?.toLowerCase().includes("suspended"),
 			);
 
 			return res.status(403).json({
-				message:
-					"Your account has been suspended. Please contact support for assistance.",
+				message: "Your account has been suspended. Please contact support.",
 				error: "ACCOUNT_SUSPENDED",
 				details: {
-					reason: suspensionNote?.note || "Violation of terms of service",
-					suspendedAt: user.updatedAt,
+					reason: suspensionNote?.note || "Violation of terms",
 					supportEmail: process.env.SUPPORT_EMAIL || "support@getameal.com",
 				},
 			});
 		}
 
-		// Check if user account is inactive (optional)
+		// Check if user account is inactive (not suspended, but inactive)
 		if (user.status === "inactive") {
 			return res.status(403).json({
 				message:
@@ -316,31 +313,26 @@ export const loginInit = async (req, res) => {
 			});
 		}
 
-		// Check if user is a cook and their cook profile is suspended
+		// For cooks, check if they are suspended (but allow pending approval)
 		if (user.isCook) {
 			const cookProfile = await CookProfile.findOne({ userId: user._id });
 
+			// Only block if cook account is suspended, not if pending approval
 			if (cookProfile && cookProfile.isSuspended) {
 				return res.status(403).json({
 					message:
-						"Your cook account has been suspended. Please contact support for assistance.",
+						"Your cook account has been suspended. Please contact support.",
 					error: "COOK_ACCOUNT_SUSPENDED",
 					details: {
 						reason: cookProfile.suspensionReason,
-						suspendedAt: cookProfile.suspendedAt,
 						supportEmail: process.env.SUPPORT_EMAIL || "support@getameal.com",
 					},
 				});
 			}
 
-			// Check if cook profile is not approved
-			if (cookProfile && !cookProfile.isApproved) {
-				return res.status(403).json({
-					message:
-						"Your cook account is pending approval. You will be notified once approved.",
-					error: "COOK_NOT_APPROVED",
-				});
-			}
+			// Don't block pending approval - just note it in response
+			const approvalStatus = cookProfile?.isApproved ? "approved" : "pending";
+			// Continue with login even if not approved
 		}
 
 		const code = generateOTP();
@@ -394,7 +386,7 @@ export const loginVerify = async (req, res) => {
 
 		// Check if OTP is expired
 		if (record.expiresAt < Date.now()) {
-			await OTP.deleteOne({ _id: record._id }); // Clean up expired OTP
+			await OTP.deleteOne({ _id: record._id });
 			return res
 				.status(400)
 				.json({ message: "OTP has expired. Please request a new one." });
@@ -409,7 +401,6 @@ export const loginVerify = async (req, res) => {
 
 		// CHECK: User account suspension
 		if (user.status === "suspended") {
-			// Get suspension details from notes
 			const suspensionNote = user.notes?.find((n) =>
 				n.note?.toLowerCase().includes("suspended"),
 			);
@@ -437,45 +428,49 @@ export const loginVerify = async (req, res) => {
 		// Get cook profile if exists
 		let cookProfile = null;
 		let isCook = false;
+		let cookApprovalStatus = "none";
 		let cookSuspensionStatus = null;
 
 		if (user.isCook) {
 			cookProfile = await CookProfile.findOne({ userId: user._id });
 			isCook = !!cookProfile;
 
-			// CHECK: Cook profile suspension
-			if (cookProfile && cookProfile.isSuspended) {
-				cookSuspensionStatus = {
-					isSuspended: true,
-					reason: cookProfile.suspensionReason,
-					note: cookProfile.suspensionNote,
-					suspendedAt: cookProfile.suspendedAt,
-				};
+			if (cookProfile) {
+				// CHECK: Cook profile suspension (block login for suspended cooks)
+				if (cookProfile.isSuspended) {
+					cookSuspensionStatus = {
+						isSuspended: true,
+						reason: cookProfile.suspensionReason,
+						note: cookProfile.suspensionNote,
+						suspendedAt: cookProfile.suspendedAt,
+					};
 
-				return res.status(403).json({
-					message:
-						"Your cook account has been suspended. Please contact support.",
-					error: "COOK_ACCOUNT_SUSPENDED",
-					details: cookSuspensionStatus,
-				});
-			}
+					return res.status(403).json({
+						message:
+							"Your cook account has been suspended. Please contact support.",
+						error: "COOK_ACCOUNT_SUSPENDED",
+						details: cookSuspensionStatus,
+					});
+				}
 
-			// CHECK: Cook profile approval status
-			if (cookProfile && !cookProfile.isApproved) {
-				return res.status(403).json({
-					message:
-						"Your cook account is pending approval. You will be notified once approved.",
-					error: "COOK_NOT_APPROVED",
-					details: {
-						submittedAt: cookProfile.createdAt,
-						status: "pending_approval",
-					},
-				});
+				// Track approval status but don't block login
+				cookApprovalStatus = cookProfile.isApproved ? "approved" : "pending";
+
+				// Add additional info for pending approval
+				if (!cookProfile.isApproved) {
+					console.log(
+						`Cook ${user.email} logged in with pending approval status`,
+					);
+				}
 			}
 		}
 
 		// Delete used OTP
 		await OTP.deleteOne({ _id: record._id });
+
+		// Update last login
+		user.lastLoginAt = new Date();
+		await user.save();
 
 		// Generate token
 		const token = generateToken(user._id);
@@ -530,6 +525,18 @@ export const loginVerify = async (req, res) => {
 							accountName: cookProfile.bankDetails.accountName,
 						}
 					: null,
+				// Add approval info for frontend
+				approvalInfo: {
+					status: cookApprovalStatus,
+					message: cookProfile.isApproved
+						? "Your cook account is approved and active"
+						: "Your cook account is pending admin approval. Some features are limited.",
+					canCreateMeals: cookProfile.isApproved && !cookProfile.isSuspended,
+					canReceiveOrders:
+						cookProfile.isApproved &&
+						!cookProfile.isSuspended &&
+						cookProfile.isAvailable,
+				},
 			};
 		}
 
@@ -540,12 +547,12 @@ export const loginVerify = async (req, res) => {
 			user: userData,
 			isCook: isCook,
 			cookProfile: cookProfileData,
-			// Add suspension status for awareness
 			accountStatus: {
 				isSuspended: user.status === "suspended",
 				status: user.status,
-				isApproved: cookProfile ? cookProfile.isApproved : true,
 				isCookSuspended: cookProfile ? cookProfile.isSuspended : false,
+				isCookApproved: cookProfile ? cookProfile.isApproved : false,
+				requiresApproval: cookProfile ? !cookProfile.isApproved : false,
 			},
 		});
 	} catch (error) {
@@ -574,7 +581,6 @@ export const socialAuth = async (req, res) => {
 		const userEmail = email || fbEmail;
 		const provider = firebase?.sign_in_provider || "google.com";
 
-		// Validate email exists
 		if (!userEmail) {
 			return res.status(400).json({
 				success: false,
@@ -582,7 +588,7 @@ export const socialAuth = async (req, res) => {
 			});
 		}
 
-		// Try to find existing user by various methods
+		// Try to find existing user
 		let user = await User.findOne({ firebaseUid: uid });
 
 		if (!user && appleUserId) {
@@ -593,37 +599,17 @@ export const socialAuth = async (req, res) => {
 			user = await User.findOne({ email: userEmail });
 		}
 
-		// If user exists, check suspension status before proceeding
 		if (user) {
-			// CHECK: User account suspension
+			// Check user account suspension (block login)
 			if (user.status === "suspended") {
-				const suspensionNote = user.notes?.find((n) =>
-					n.note?.toLowerCase().includes("suspended"),
-				);
-
 				return res.status(403).json({
 					success: false,
 					message: "Your account has been suspended. Please contact support.",
 					error: "ACCOUNT_SUSPENDED",
-					details: {
-						reason: suspensionNote?.note || "Violation of terms of service",
-						suspendedAt: user.updatedAt,
-						supportEmail: process.env.SUPPORT_EMAIL || "support@getameal.com",
-					},
 				});
 			}
 
-			// CHECK: User account inactive
-			if (user.status === "inactive") {
-				return res.status(403).json({
-					success: false,
-					message:
-						"Your account is inactive. Please contact support to reactivate your account.",
-					error: "ACCOUNT_INACTIVE",
-				});
-			}
-
-			// Update any missing fields
+			// Update user info
 			let needsUpdate = false;
 
 			if (!user.firebaseUid && uid) {
@@ -643,7 +629,6 @@ export const socialAuth = async (req, res) => {
 				needsUpdate = true;
 			}
 
-			// Update last login time
 			user.lastLoginAt = new Date();
 			needsUpdate = true;
 
@@ -651,7 +636,7 @@ export const socialAuth = async (req, res) => {
 				await user.save();
 			}
 
-			// Check cook profile suspension if user is a cook
+			// Check cook profile
 			let cookProfile = null;
 			let isCook = false;
 
@@ -659,25 +644,19 @@ export const socialAuth = async (req, res) => {
 				cookProfile = await CookProfile.findOne({ userId: user._id });
 				isCook = !!cookProfile;
 
+				// Block only if suspended, not for pending approval
 				if (cookProfile && cookProfile.isSuspended) {
 					return res.status(403).json({
 						success: false,
 						message:
 							"Your cook account has been suspended. Please contact support.",
 						error: "COOK_ACCOUNT_SUSPENDED",
-						details: {
-							reason: cookProfile.suspensionReason,
-							note: cookProfile.suspensionNote,
-							suspendedAt: cookProfile.suspendedAt,
-							supportEmail: process.env.SUPPORT_EMAIL || "support@getameal.com",
-						},
 					});
 				}
 			}
 
 			const token = generateToken(user._id);
 
-			// Remove sensitive data
 			const userData = {
 				_id: user._id,
 				email: user.email,
@@ -686,12 +665,9 @@ export const socialAuth = async (req, res) => {
 				role: user.role,
 				isCook: user.isCook,
 				profileImage: user.profileImage,
-				coverImage: user.coverImage,
 				status: user.status,
 				isVerified: user.isVerified,
 				provider: user.provider,
-				createdAt: user.createdAt,
-				updatedAt: user.updatedAt,
 			};
 
 			return res.status(200).json({
@@ -707,26 +683,14 @@ export const socialAuth = async (req, res) => {
 							isApproved: cookProfile.isApproved,
 							isAvailable: cookProfile.isAvailable,
 							isSuspended: cookProfile.isSuspended,
-							rating: cookProfile.rating,
+							requiresApproval: !cookProfile.isApproved,
 						}
 					: null,
 				accountStatus: {
 					isSuspended: user.status === "suspended",
-					status: user.status,
 					isCookSuspended: cookProfile ? cookProfile.isSuspended : false,
+					isCookApproved: cookProfile ? cookProfile.isApproved : false,
 				},
-			});
-		}
-
-		// If no user exists, create a new one
-		// Check if email is already taken by a suspended account (should have been found above, but double-check)
-		const existingUserWithEmail = await User.findOne({ email: userEmail });
-		if (existingUserWithEmail) {
-			// This case should have been caught above, but just in case
-			return res.status(409).json({
-				success: false,
-				message: "User already exists with this email. Please log in normally.",
-				error: "USER_EXISTS",
 			});
 		}
 
@@ -738,56 +702,40 @@ export const socialAuth = async (req, res) => {
 			appleUserId: appleUserId || undefined,
 			provider,
 			isVerified: true,
-			status: "active", // Explicitly set status
+			status: "active",
 			lastLoginAt: new Date(),
 		});
 
 		const token = generateToken(user._id);
 
-		const userData = {
-			_id: user._id,
-			email: user.email,
-			fullName: user.fullName,
-			role: user.role,
-			isCook: user.isCook,
-			status: user.status,
-			isVerified: user.isVerified,
-			provider: user.provider,
-			createdAt: user.createdAt,
-		};
-
 		return res.status(200).json({
 			success: true,
 			message: "Account created and logged in successfully",
 			token,
-			user: userData,
+			user: {
+				_id: user._id,
+				email: user.email,
+				fullName: user.fullName,
+				role: user.role,
+				isCook: user.isCook,
+				status: user.status,
+				isVerified: user.isVerified,
+			},
 			isCook: false,
 			cookProfile: null,
 			accountStatus: {
 				isSuspended: false,
-				status: "active",
 				isCookSuspended: false,
+				isCookApproved: false,
 			},
 		});
 	} catch (error) {
 		console.error("Social auth error:", error);
 
-		// Handle duplicate key error specifically
 		if (error.code === 11000) {
 			try {
-				// Try to find and return the existing user
 				const existingUser = await User.findOne({ email: req.body.email });
-				if (existingUser) {
-					// Check suspension for existing user
-					if (existingUser.status === "suspended") {
-						return res.status(403).json({
-							success: false,
-							message:
-								"Your account has been suspended. Please contact support.",
-							error: "ACCOUNT_SUSPENDED",
-						});
-					}
-
+				if (existingUser && existingUser.status !== "suspended") {
 					const token = generateToken(existingUser._id);
 					return res.status(200).json({
 						success: true,
