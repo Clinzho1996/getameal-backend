@@ -357,67 +357,123 @@ export const createNotification = async (req, res) => {
 		// SEND PUSH (FCM)
 		// ===============================
 		if (sendPush && user.notificationSettings?.push_enabled !== false) {
-			const tokens = user.pushTokens?.map((t) => t.token).filter(Boolean) || [];
+			const validTokens = [];
+			const invalidTokens = [];
 
-			console.log("📱 Tokens found:", tokens.length);
-			console.log("🔥 Firebase apps:", admin.apps.length);
-
-			if (tokens.length > 0) {
-				try {
-					const response = await admin.messaging().sendEachForMulticast({
-						tokens,
-						notification: {
-							title,
-							body,
-						},
-						data: {
-							notificationId: notification._id.toString(),
-							type,
-							...Object.fromEntries(
-								Object.entries(data).map(([k, v]) => [k, String(v)]),
-							),
-						},
-					});
-
-					console.log("TOKEN SAMPLE:", tokens[0]);
-					console.log("🔥 FCM RESPONSE:", response);
-
-					// Handle failures
-					const failedTokens = [];
-
-					response.responses.forEach((resp, index) => {
-						if (!resp.success) {
-							const errorMsg = resp.error?.message;
-							console.log(`❌ Token failed: ${tokens[index]} | ${errorMsg}`);
-
-							// Remove invalid tokens
-							if (
-								errorMsg?.includes("registration-token-not-registered") ||
-								errorMsg?.includes("invalid-registration-token")
-							) {
-								failedTokens.push(tokens[index]);
-							}
+			// Filter and validate tokens
+			if (user.pushTokens && user.pushTokens.length > 0) {
+				for (const pushToken of user.pushTokens) {
+					if (
+						pushToken.token &&
+						typeof pushToken.token === "string" &&
+						pushToken.token.length > 10
+					) {
+						// Basic validation - FCM tokens are usually long strings
+						if (
+							pushToken.token.startsWith("e") ||
+							pushToken.token.includes(":")
+						) {
+							validTokens.push(pushToken.token);
+						} else {
+							invalidTokens.push(pushToken.token);
 						}
-					});
+					} else {
+						if (pushToken.token) invalidTokens.push(pushToken.token);
+					}
+				}
+			}
 
-					// Cleanup invalid tokens
-					if (failedTokens.length > 0) {
-						await User.findByIdAndUpdate(user._id, {
-							$pull: {
-								pushTokens: { token: { $in: failedTokens } },
+			console.log("📱 Valid tokens found:", validTokens.length);
+			console.log("📱 Invalid tokens found:", invalidTokens.length);
+
+			// Remove invalid tokens from database
+			if (invalidTokens.length > 0) {
+				await User.findByIdAndUpdate(user._id, {
+					$pull: {
+						pushTokens: { token: { $in: invalidTokens } },
+					},
+				});
+				console.log(
+					"🗑 Removed invalid tokens from database:",
+					invalidTokens.length,
+				);
+			}
+
+			// Send push notifications only if there are valid tokens
+			if (validTokens.length > 0) {
+				try {
+					// Send in batches of 500 (FCM limit)
+					const batchSize = 500;
+					let successCount = 0;
+					let failureCount = 0;
+
+					for (let i = 0; i < validTokens.length; i += batchSize) {
+						const batchTokens = validTokens.slice(i, i + batchSize);
+
+						const response = await admin.messaging().sendEachForMulticast({
+							tokens: batchTokens,
+							notification: {
+								title: title,
+								body: body,
+							},
+							data: {
+								notificationId: notification._id.toString(),
+								type: type,
+								...Object.fromEntries(
+									Object.entries(data).map(([k, v]) => [k, String(v)]),
+								),
 							},
 						});
-						console.log("🗑 Removed invalid tokens:", failedTokens.length);
+
+						successCount += response.successCount;
+						failureCount += response.failureCount;
+
+						// Handle failed tokens in this batch
+						const failedTokensInBatch = [];
+						response.responses.forEach((resp, index) => {
+							if (!resp.success) {
+								const errorMsg = resp.error?.message;
+								const failedToken = batchTokens[index];
+								console.log(`❌ Token failed: ${failedToken} | ${errorMsg}`);
+
+								// Mark as invalid for specific errors
+								if (
+									errorMsg?.includes("registration-token-not-registered") ||
+									errorMsg?.includes("invalid-registration-token") ||
+									errorMsg?.includes("not-registered")
+								) {
+									failedTokensInBatch.push(failedToken);
+								}
+							}
+						});
+
+						// Remove failed tokens from database
+						if (failedTokensInBatch.length > 0) {
+							await User.findByIdAndUpdate(user._id, {
+								$pull: {
+									pushTokens: { token: { $in: failedTokensInBatch } },
+								},
+							});
+							console.log(
+								"🗑 Removed invalid tokens from batch:",
+								failedTokensInBatch.length,
+							);
+						}
 					}
 
+					console.log(
+						`✅ Push sent: ${successCount} success, ${failureCount} failed`,
+					);
+
 					// Mark push status
-					notification.is_push_sent = response.successCount > 0;
+					notification.is_push_sent = successCount > 0;
 					await notification.save();
 				} catch (err) {
 					console.error("❌ Push send failed:", err.message);
+					// Don't throw error, just log it
 				}
 			} else {
-				console.log("⚠️ No push tokens available");
+				console.log("⚠️ No valid push tokens available");
 			}
 		}
 
@@ -431,13 +487,27 @@ export const createNotification = async (req, res) => {
 					to: user.email,
 					subject: title,
 					html: `
-						<h2>${title}</h2>
-						<p>${body}</p>
-					`,
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #4CAF50;">${title}</h2>
+              <p>${body}</p>
+              ${
+								data && Object.keys(data).length > 0
+									? `
+                <div style="background-color: #f4f4f4; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                  <p style="font-size: 12px; color: #666;">Additional information available in the app.</p>
+                </div>
+              `
+									: ""
+							}
+              <hr style="margin: 20px 0;" />
+              <p style="font-size: 12px; color: #777;">GetAMeal - Connecting food lovers with amazing home cooks</p>
+            </div>
+          `,
 				});
 
 				notification.is_email_sent = true;
 				await notification.save();
+				console.log(`✅ Email sent to ${user.email}`);
 			} catch (err) {
 				console.error("❌ Email send failed:", err.message);
 			}
@@ -448,10 +518,28 @@ export const createNotification = async (req, res) => {
 		// ===============================
 		return res.status(201).json({
 			success: true,
-			data: notification,
+			data: {
+				id: notification._id,
+				title: notification.title,
+				body: notification.body,
+				type: notification.type,
+				is_read: notification.is_read,
+				created_at: notification.created_at,
+				push_sent: notification.is_push_sent,
+				email_sent: notification.is_email_sent,
+			},
 		});
 	} catch (err) {
 		console.error("❌ Create notification error:", err);
+
+		// Handle validation errors specifically
+		if (err.name === "ValidationError") {
+			return res.status(400).json({
+				error: "Validation error",
+				details: err.message,
+			});
+		}
+
 		return res.status(500).json({
 			error: err.message,
 		});
