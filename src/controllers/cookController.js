@@ -17,64 +17,331 @@ cloudinary.v2.config({
 	api_secret: process.env.CLOUD_SECRET,
 });
 
-// Get single cook by ID
-// Get single cook by ID
 export const getCookById = async (req, res) => {
 	try {
-		const cook = await User.findOne({
-			_id: req.params.id,
-			$or: [{ role: "cook" }, { isCook: true }],
-		});
+		const { cookId } = req.params;
+
+		const cook = await CookProfile.findById(cookId).populate(
+			"userId",
+			"fullName email phone profileImage isSuspended suspensionReason suspensionNote role",
+		);
 
 		if (!cook) {
 			return res.status(404).json({ message: "Cook not found" });
 		}
 
-		const cookProfile = await CookProfile.findOne({
-			userId: cook._id,
-		});
+		const meals = await Meal.find({ cookId: cook.userId?._id || cook.userId })
+			.select(
+				"name description price images category status portionsRemaining portionsTotal createdAt cookingDate pickupWindow deliveryRegions quantityLabel unitsPerQuantity",
+			)
+			.sort({ createdAt: -1 })
+			.populate("category", "name image");
 
-		const { payoutBank, ...userData } = cook.toObject();
-		res.json({
-			...userData,
-			cookProfile,
-			bankDetails: cookProfile?.bankDetails || null,
+		const formattedMeals = meals.map((meal) => ({
+			_id: meal._id,
+			name: meal.name,
+			description: meal.description,
+			category: meal.category,
+			price: meal.price,
+			images: meal.images || [],
+			status: meal.status,
+			portionsRemaining: meal.portionsRemaining,
+			portionsTotal: meal.portionsTotal,
+			quantityLabel: meal.quantityLabel,
+			unitsPerQuantity: meal.unitsPerQuantity,
+			cookingDate: meal.cookingDate,
+			pickupWindow: meal.pickupWindow,
+			deliveryRegions: meal.deliveryRegions,
+			createdAt: meal.createdAt,
+		}));
+
+		const totalRevenue = await Order.aggregate([
+			{
+				$match: {
+					cookId: cook.userId?._id || cook.userId,
+					paymentStatus: "completed",
+				},
+			},
+			{ $group: { _id: null, total: { $sum: "$totalAmount" } } },
+		]);
+
+		const recentOrders = await Order.find({
+			cookId: cook.userId?._id || cook.userId,
+		})
+			.sort({ createdAt: -1 })
+			.limit(10)
+			.populate("userId", "fullName email phone")
+			.select("orderNumber totalAmount status paymentStatus createdAt");
+
+		const cookData = {
+			cookId: cook._id,
+			userId: cook.userId?._id,
+
+			// Personal Information
+			firstName: cook.firstName,
+			lastName: cook.lastName,
+			fullName: `${cook.firstName || ""} ${cook.lastName || ""}`.trim(),
+			cookDisplayName: cook.cookDisplayName,
+			email: cook.email,
+			phone: cook.phone,
+			bio: cook.bio,
+
+			// Images
+			profilePhoto: cook.profilePhoto,
+			coverPhoto: cook.coverPhoto,
+			kitchenPhotos: cook.kitchenPhotos,
+
+			// Location Information
+			location: cook.location,
+			address: cook.cookAddress,
+			coordinates: cook.location?.coordinates || null,
+
+			// Professional Details
+			experience: cook.cookingExperience,
+			availablePickup: cook.availablePickup,
+			schedule: cook.schedule,
+			availableForCooking: cook.availableForCooking,
+
+			// Status Flags - Use cook.isSuspended (directly from CookProfile)
+			isAvailable: cook.isAvailable,
+			isApproved: cook.isApproved,
+			isSuspended: cook.isSuspended || false, // ✅ Fixed: use cook.isSuspended
+			suspensionReason: cook.suspensionReason, // Add if you have this field
+			suspensionNote: cook.suspensionNote, // Add if you have this field
+
+			// KYC & Compliance
+			kycInfo: {
+				isRegistered: cook.kycInfo?.isRegistered || false,
+				businessType: cook.kycInfo?.businessType,
+				cacImage: cook.kycInfo?.cacImage,
+				verifiedAt: cook.kycInfo?.verifiedAt,
+			},
+			businessDetails: {
+				cac: cook.businessDetails?.cac,
+				cookType: cook.businessDetails?.cookType,
+				taxId: cook.businessDetails?.taxId,
+				businessName: cook.businessDetails?.businessName,
+			},
+
+			// Payment Information
+			bankDetails: cook.bankDetails,
+			walletBalance: cook.walletBalance,
+
+			// Performance Metrics
+			rating: cook.rating,
+			reviewsCount: cook.reviewsCount,
+			ordersCount: cook.ordersCount,
+			totalRevenue: totalRevenue[0]?.total || 0,
+
+			// User Reference
+			user: cook.userId
+				? {
+						id: cook.userId._id,
+						fullName: cook.userId.fullName,
+						email: cook.userId.email,
+						phone: cook.userId.phone,
+						profileImage: cook.userId.profileImage,
+						role: cook.userId.role,
+						isSuspended: cook.userId.isSuspended,
+					}
+				: null,
+
+			createdAt: cook.createdAt,
+			updatedAt: cook.updatedAt,
+		};
+
+		res.status(200).json({
+			success: true,
+			cook: cookData,
+			meals: {
+				list: formattedMeals,
+				total: formattedMeals.length,
+			},
+			recentOrders: {
+				list: recentOrders,
+				total: recentOrders.length,
+			},
 		});
 	} catch (error) {
-		res.status(500).json({ message: error.message });
+		console.error(error);
+		res.status(500).json({ message: "Server error", error: error.message });
 	}
 };
 
 // Get all cooks
 export const getAllCooks = async (req, res) => {
 	try {
-		const cooks = await User.find({
-			$or: [{ role: "cook" }, { isCook: true }],
-		}).select("_id fullName profileImage cookAddress  availableForCooking");
+		const {
+			status,
+			verification,
+			city,
+			sortBy,
+			dateFrom,
+			dateTo,
+			isAvailable,
+			kycStatus,
+			suspensionStatus, // Add filter for suspended cooks
+		} = req.query;
 
-		const cookIds = cooks.map((c) => c._id);
+		const filter = {};
 
-		const cookProfiles = await CookProfile.find({
-			userId: { $in: cookIds },
-		});
+		if (status) {
+			filter.isAvailable = status === "active";
+		}
 
-		const merged = cooks.map((cook) => {
-			const profile = cookProfiles.find(
-				(p) => p.userId.toString() === cook._id.toString(),
-			);
+		if (verification) {
+			filter.isApproved = verification === "verified";
+		}
+
+		// Filter by suspension status on CookProfile
+		if (suspensionStatus === "suspended") {
+			filter.isSuspended = true;
+		} else if (suspensionStatus === "active") {
+			filter.isSuspended = false;
+		}
+
+		if (kycStatus) {
+			filter["kycInfo.isRegistered"] = kycStatus === "registered";
+		}
+
+		if (city) {
+			filter["location.address"] = { $regex: city, $options: "i" };
+		}
+
+		if (typeof isAvailable !== "undefined") {
+			filter.isAvailable = isAvailable === "true";
+		}
+
+		if (dateFrom || dateTo) filter.createdAt = {};
+		if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+		if (dateTo) filter.createdAt.$lte = new Date(dateTo);
+
+		const sort = {};
+		switch (sortBy) {
+			case "newest":
+				sort.createdAt = -1;
+				break;
+			case "oldest":
+				sort.createdAt = 1;
+				break;
+			case "mostOrders":
+				sort.ordersCount = -1;
+				break;
+			case "highestRating":
+				sort.rating = -1;
+				break;
+			case "lastActive":
+				sort.updatedAt = -1;
+				break;
+			default:
+				sort.createdAt = -1;
+		}
+
+		const cooks = await CookProfile.find(filter)
+			.sort(sort)
+			.populate("userId", "fullName email phone profileImage isSuspended");
+
+		const data = cooks.map((cook) => {
+			let firstName = cook.firstName;
+			let lastName = cook.lastName;
+			let fullName = "";
+
+			if (
+				firstName &&
+				firstName !== "Unknown" &&
+				lastName &&
+				lastName !== "Cook"
+			) {
+				fullName = `${firstName} ${lastName}`;
+			} else if (cook.cookDisplayName && cook.cookDisplayName !== "undefined") {
+				fullName = cook.cookDisplayName;
+			} else if (cook.cookName) {
+				fullName = cook.cookName;
+			} else if (cook.userId?.fullName) {
+				fullName = cook.userId.fullName;
+			} else {
+				fullName = "Chef";
+			}
+
+			const displayName =
+				cook.cookDisplayName && cook.cookDisplayName !== "undefined"
+					? cook.cookDisplayName
+					: cook.cookName || fullName;
+
+			let bio = cook.bio;
+			if (!bio || bio.includes("undefined")) {
+				bio = `${displayName} - Specializing in delicious home-cooked meals.`;
+			}
 
 			return {
-				...cook.toObject(),
-				rating: profile?.rating || 0,
-				ordersCount: profile?.ordersCount || 0,
-				bankDetails: profile?.bankDetails || null,
-				isApproved: profile?.isApproved || false,
+				cookId: cook._id,
+				userId: cook.userId?._id,
+				firstName: firstName !== "Unknown" ? firstName : null,
+				lastName: lastName !== "Cook" ? lastName : null,
+				fullName: fullName,
+				cookDisplayName: displayName,
+				email:
+					cook.email && cook.email !== "undefined"
+						? cook.email
+						: cook.userId?.email,
+				phone:
+					cook.phone && cook.phone !== "undefined"
+						? cook.phone
+						: cook.userId?.phone,
+				bio: bio,
+				profilePhoto:
+					cook.profilePhoto ||
+					cook.userId?.profileImage?.url ||
+					cook.userId?.profileImage,
+				coverPhoto: cook.coverPhoto,
+				kitchenPhotos:
+					cook.kitchenPhotos && cook.kitchenPhotos.length > 0
+						? cook.kitchenPhotos
+						: [],
+				location: cook.location,
+				address: cook.cookAddress,
+				experience: cook.cookingExperience,
+				isAvailable: cook.isAvailable,
+				isApproved: cook.isApproved,
+				isSuspended: cook.isSuspended || false, // ✅ Fixed: use cook.isSuspended
+				availableForCooking: cook.availableForCooking,
+				schedule: cook.schedule || [],
+				kycInfo: cook.kycInfo || {
+					isRegistered: false,
+					businessType: "individual",
+				},
+				businessDetails: cook.businessDetails || {
+					cac: { isRegistered: false },
+					cookType: "individual",
+				},
+				bankDetails: cook.bankDetails || null,
+				rating: cook.rating || 0,
+				reviewsCount: cook.reviewsCount || 0,
+				ordersCount: cook.ordersCount || 0,
+				walletBalance: cook.walletBalance || 0,
+				createdAt: cook.createdAt,
+				updatedAt: cook.updatedAt,
+				user: cook.userId
+					? {
+							id: cook.userId._id,
+							fullName: cook.userId.fullName,
+							email: cook.userId.email,
+							phone: cook.userId.phone,
+							profileImage: cook.userId.profileImage,
+							isSuspended: cook.userId.isSuspended,
+						}
+					: null,
 			};
 		});
 
-		res.json(merged);
+		res.status(200).json({
+			success: true,
+			count: data.length,
+			cooks: data,
+		});
 	} catch (error) {
-		res.status(500).json({ message: error.message });
+		console.error(error);
+		res.status(500).json({ message: "Server error", error: error.message });
 	}
 };
 
