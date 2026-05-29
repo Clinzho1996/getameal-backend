@@ -3,6 +3,7 @@ import multer from "multer";
 import {
 	addCookBankAccount,
 	deleteCookBankAccount,
+	getCookBankDetails,
 	updateCookBankAccount,
 } from "../controllers/bankController.js";
 import {
@@ -34,6 +35,7 @@ router.post(
 router.get("/kyc-status", protect, getCookKYCStatus);
 router.post("/referral", protect, referCook); // New referral route
 router.post("/bank", protect, addCookBankAccount);
+router.get("/bank", protect, getCookBankDetails);
 router.put("/bank", protect, updateCookBankAccount);
 router.delete("/bank", protect, deleteCookBankAccount);
 

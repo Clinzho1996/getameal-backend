@@ -182,7 +182,7 @@ export const becomeCook = async (req, res) => {
 			});
 		}
 
-		// Check if files exist - handle both req.files (for multiple fields) and req.file (for single)
+		// Check if files exist
 		const files = req.files || {};
 
 		// Extract files based on multer configuration
@@ -224,17 +224,6 @@ export const becomeCook = async (req, res) => {
 				message: "You have already applied to become a cook",
 			});
 		}
-
-		// Validate referral code if provided
-		let referrer = null;
-		// if (referralCode) {
-		// 	referrer = await User.findOne({ referralCode });
-		// 	if (!referrer) {
-		// 		return res.status(400).json({
-		// 			message: "Invalid referral code",
-		// 		});
-		// 	}
-		// }
 
 		// Upload images to Cloudinary
 		let profilePhotoUrl = null;
@@ -305,7 +294,7 @@ export const becomeCook = async (req, res) => {
 			});
 		}
 
-		// Create cook profile
+		// Create cook profile data
 		const cookProfileData = {
 			userId,
 			firstName,
@@ -317,6 +306,7 @@ export const becomeCook = async (req, res) => {
 			coverPhoto: coverPhotoUrl,
 			bio: bio || "",
 			cookAddress: address,
+			cookingExperience: req.body.experience || null, // Make sure experience is included
 			availablePickup: true,
 			schedule:
 				startImmediately === "true" || startImmediately === true
@@ -330,6 +320,7 @@ export const becomeCook = async (req, res) => {
 				isRegistered: parsedKycInfo.isRegistered,
 				businessType: parsedKycInfo.businessType || null,
 				cacImage: cacImageUrl,
+				submittedAt: new Date(),
 			},
 			businessDetails: parsedBusinessDetails || {
 				cac: {
@@ -359,6 +350,7 @@ export const becomeCook = async (req, res) => {
 		};
 
 		// Add bank details if provided during onboarding
+		let bankDetailsAdded = null;
 		if (
 			parsedBankDetails &&
 			parsedBankDetails.accountNumber &&
@@ -383,6 +375,13 @@ export const becomeCook = async (req, res) => {
 					bankName: parsedBankDetails.bankName,
 					accountName: account_name,
 				};
+
+				bankDetailsAdded = {
+					bankName: parsedBankDetails.bankName,
+					bankCode: parsedBankDetails.bankCode,
+					accountNumber: `****${parsedBankDetails.accountNumber.slice(-4)}`,
+					accountName: account_name,
+				};
 			} catch (error) {
 				console.error("Bank account verification failed:", error.message);
 				// Don't fail the entire onboarding, just log the error
@@ -403,12 +402,6 @@ export const becomeCook = async (req, res) => {
 
 		await user.save();
 
-		// Handle referral reward if applicable
-		if (referrer) {
-			// Add referral reward logic here
-			console.log(`User ${userId} was referred by ${referrer._id}`);
-		}
-
 		// Create admin notification for new cook application
 		await createAdminNotification({
 			title: "New Cook Application",
@@ -420,21 +413,50 @@ export const becomeCook = async (req, res) => {
 			},
 		});
 
-		res.status(201).json({
+		// Prepare response with complete data including bank details
+		const responseData = {
 			message:
 				"Cook application submitted successfully. Awaiting admin approval.",
 			status: "pending_approval",
 			cookProfile: {
 				id: cookProfile._id,
+				userId: cookProfile.userId,
+				firstName: cookProfile.firstName,
+				lastName: cookProfile.lastName,
+				fullName: `${cookProfile.firstName} ${cookProfile.lastName}`,
 				cookDisplayName: cookProfile.cookDisplayName,
-				isApproved: cookProfile.isApproved,
-				kycStatus: cookProfile.kycInfo.isRegistered ? "registered" : "pending",
+				email: cookProfile.email,
+				phone: cookProfile.phone,
+				bio: cookProfile.bio,
 				profilePhoto: cookProfile.profilePhoto,
 				coverPhoto: cookProfile.coverPhoto,
 				kitchenPhotos: cookProfile.kitchenPhotos,
+				address: cookProfile.cookAddress,
+				location: cookProfile.location,
+				experience: cookProfile.cookingExperience,
+				isApproved: cookProfile.isApproved,
+				isAvailable: cookProfile.isAvailable,
+				kycInfo: {
+					isRegistered: cookProfile.kycInfo?.isRegistered || false,
+					businessType: cookProfile.kycInfo?.businessType || null,
+					status: cookProfile.kycInfo?.isRegistered ? "registered" : "pending",
+				},
+				businessDetails: cookProfile.businessDetails,
+				bankDetails: bankDetailsAdded, // Include bank details if added
+				kycStatus: cookProfile.kycInfo?.isRegistered ? "registered" : "pending",
+				createdAt: cookProfile.createdAt,
 			},
 			userLocation: cookProfile.location || null,
-		});
+		};
+
+		// Add bank details to response if they exist
+		if (bankDetailsAdded) {
+			responseData.bankDetailsAdded = true;
+			responseData.message =
+				"Cook application submitted successfully with bank details. Awaiting admin approval.";
+		}
+
+		res.status(201).json(responseData);
 	} catch (error) {
 		console.error("Failed to submit cook application:", error);
 		// Clean up any uploaded files if there was an error
