@@ -89,6 +89,7 @@ export const getAllCooks = async (req, res) => {
 			dateTo,
 			isAvailable,
 			kycStatus,
+			suspensionStatus,
 		} = req.query;
 
 		const filter = {};
@@ -99,6 +100,12 @@ export const getAllCooks = async (req, res) => {
 
 		if (verification) {
 			filter.isApproved = verification === "verified";
+		}
+
+		if (suspensionStatus === "suspended") {
+			filter.isSuspended = true;
+		} else if (suspensionStatus === "active") {
+			filter.isSuspended = false;
 		}
 
 		if (kycStatus) {
@@ -138,12 +145,12 @@ export const getAllCooks = async (req, res) => {
 				sort.createdAt = -1;
 		}
 
+		// Remove population for suspendedBy and reactivatedBy
 		const cooks = await CookProfile.find(filter)
 			.sort(sort)
 			.populate("userId", "fullName email phone profileImage isSuspended");
 
 		const data = cooks.map((cook) => {
-			// Get the best available name
 			let firstName = cook.firstName;
 			let lastName = cook.lastName;
 			let fullName = "";
@@ -165,16 +172,14 @@ export const getAllCooks = async (req, res) => {
 				fullName = "Chef";
 			}
 
-			// Get the best available display name
 			const displayName =
 				cook.cookDisplayName && cook.cookDisplayName !== "undefined"
 					? cook.cookDisplayName
 					: cook.cookName || fullName;
 
-			// Get the best available bio
 			let bio = cook.bio;
 			if (!bio || bio.includes("undefined")) {
-				bio = `${displayName} - . Specializing in delicious home-cooked meals.`;
+				bio = `${displayName} - Specializing in delicious home-cooked meals.`;
 			}
 
 			return {
@@ -204,8 +209,10 @@ export const getAllCooks = async (req, res) => {
 						: [],
 				location: cook.location,
 				address: cook.cookAddress,
+				experience: cook.cookingExperience,
 				isAvailable: cook.isAvailable,
 				isApproved: cook.isApproved,
+				isSuspended: cook.isSuspended || false,
 				availableForCooking: cook.availableForCooking,
 				schedule: cook.schedule || [],
 				kycInfo: cook.kycInfo || {
@@ -252,7 +259,7 @@ export const getCookById = async (req, res) => {
 	try {
 		const { cookId } = req.params;
 
-		// Get the cook profile with new schema and populate user info
+		// Remove population for suspendedBy and reactivatedBy
 		const cook = await CookProfile.findById(cookId).populate(
 			"userId",
 			"fullName email phone profileImage isSuspended suspensionReason suspensionNote role",
@@ -262,7 +269,6 @@ export const getCookById = async (req, res) => {
 			return res.status(404).json({ message: "Cook not found" });
 		}
 
-		// Get meals created by this cook (using the cook's userId which references the User)
 		const meals = await Meal.find({ cookId: cook.userId?._id || cook.userId })
 			.select(
 				"name description price images category status portionsRemaining portionsTotal createdAt cookingDate pickupWindow deliveryRegions quantityLabel unitsPerQuantity",
@@ -270,7 +276,6 @@ export const getCookById = async (req, res) => {
 			.sort({ createdAt: -1 })
 			.populate("category", "name image");
 
-		// Format meals with complete information
 		const formattedMeals = meals.map((meal) => ({
 			_id: meal._id,
 			name: meal.name,
@@ -289,7 +294,6 @@ export const getCookById = async (req, res) => {
 			createdAt: meal.createdAt,
 		}));
 
-		// Calculate additional stats
 		const totalRevenue = await Order.aggregate([
 			{
 				$match: {
@@ -300,7 +304,6 @@ export const getCookById = async (req, res) => {
 			{ $group: { _id: null, total: { $sum: "$totalAmount" } } },
 		]);
 
-		// Get recent orders
 		const recentOrders = await Order.find({
 			cookId: cook.userId?._id || cook.userId,
 		})
@@ -309,16 +312,14 @@ export const getCookById = async (req, res) => {
 			.populate("userId", "fullName email phone")
 			.select("orderNumber totalAmount status paymentStatus createdAt");
 
-		// Format the complete cook response
 		const cookData = {
-			// Basic Info
 			cookId: cook._id,
 			userId: cook.userId?._id,
 
 			// Personal Information
 			firstName: cook.firstName,
 			lastName: cook.lastName,
-			fullName: `${cook.firstName} ${cook.lastName}`,
+			fullName: `${cook.firstName || ""} ${cook.lastName || ""}`.trim(),
 			cookDisplayName: cook.cookDisplayName,
 			email: cook.email,
 			phone: cook.phone,
@@ -335,6 +336,7 @@ export const getCookById = async (req, res) => {
 			coordinates: cook.location?.coordinates || null,
 
 			// Professional Details
+			experience: cook.cookingExperience,
 			availablePickup: cook.availablePickup,
 			schedule: cook.schedule,
 			availableForCooking: cook.availableForCooking,
@@ -342,9 +344,7 @@ export const getCookById = async (req, res) => {
 			// Status Flags
 			isAvailable: cook.isAvailable,
 			isApproved: cook.isApproved,
-			isSuspended: cook.userId?.isSuspended || false,
-			suspensionReason: cook.userId?.suspensionReason,
-			suspensionNote: cook.userId?.suspensionNote,
+			isSuspended: cook.isSuspended || false,
 
 			// KYC & Compliance
 			kycInfo: {
@@ -370,7 +370,7 @@ export const getCookById = async (req, res) => {
 			ordersCount: cook.ordersCount,
 			totalRevenue: totalRevenue[0]?.total || 0,
 
-			// User Reference (from User model)
+			// User Reference
 			user: cook.userId
 				? {
 						id: cook.userId._id,
@@ -383,7 +383,6 @@ export const getCookById = async (req, res) => {
 					}
 				: null,
 
-			// Timestamps
 			createdAt: cook.createdAt,
 			updatedAt: cook.updatedAt,
 		};
