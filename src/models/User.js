@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema(
 			enum: [
 				"user",
 				"admin",
+				"cook",
 				"operations agent",
 				"operations manager",
 				"customer support",

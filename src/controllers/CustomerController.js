@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import CookProfile from "../models/CookProfile.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
@@ -282,7 +283,7 @@ export const creditCustomerWallet = async (req, res) => {
 export const toggleCustomerStatus = async (req, res) => {
 	try {
 		const { userId } = req.params;
-		const { action, reason, note, notifyUser = true } = req.body; // suspend or activate
+		const { action, note, notifyUser = true } = req.body;
 
 		const user = await User.findById(userId);
 		if (!user) return res.status(404).json({ message: "User not found" });
@@ -297,24 +298,19 @@ export const toggleCustomerStatus = async (req, res) => {
 		let notificationBody = "";
 
 		if (action === "suspend") {
-			if (!reason) {
-				return res
-					.status(400)
-					.json({ message: "Reason is required for suspension" });
-			}
-
 			// Use the existing 'status' field from your schema
 			user.status = "suspended";
 
 			// Add suspension details to notes array for audit trail
+			const suspensionNote = `Account suspended by ${req.user.fullName || req.user.email}${note ? `: ${note}` : ""}`;
 			user.notes.push({
-				note: `Account suspended by ${req.user.fullName || req.user.email}. Reason: ${reason}${note ? ` Additional note: ${note}` : ""}`,
+				note: suspensionNote,
 				createdAt: new Date(),
 			});
 
 			statusMessage = "suspended";
 			notificationTitle = "🔒 Account Suspended";
-			notificationBody = `Your account has been suspended. Reason: ${reason}. Please contact support if you believe this is an error.`;
+			notificationBody = `Your account has been suspended.${note ? ` Reason: ${note}` : " Please contact support for more information."}`;
 
 			// If the user is also a cook, update their cook profile
 			if (user.isCook) {
@@ -322,7 +318,6 @@ export const toggleCustomerStatus = async (req, res) => {
 				if (cookProfile) {
 					cookProfile.isSuspended = true;
 					cookProfile.isAvailable = false;
-					cookProfile.suspensionReason = reason;
 					cookProfile.suspensionNote = note || null;
 					cookProfile.suspendedAt = new Date();
 					cookProfile.suspendedBy = req.user.id;
@@ -350,7 +345,6 @@ export const toggleCustomerStatus = async (req, res) => {
 				if (cookProfile) {
 					cookProfile.isSuspended = false;
 					cookProfile.isAvailable = true;
-					cookProfile.suspensionReason = null;
 					cookProfile.suspensionNote = null;
 					cookProfile.reactivatedAt = new Date();
 					cookProfile.reactivatedBy = req.user.id;
@@ -372,7 +366,7 @@ export const toggleCustomerStatus = async (req, res) => {
 				await sendPushToUser(userId, notificationTitle, notificationBody, {
 					type: `account_${action}`,
 					userId: user._id,
-					reason: reason || null,
+					note: note || null,
 				});
 			} catch (pushError) {
 				console.error(
@@ -386,12 +380,11 @@ export const toggleCustomerStatus = async (req, res) => {
 		// Create admin notification for audit trail
 		await createAdminNotification({
 			title: `User Account ${action === "suspend" ? "Suspended" : "Reactivated"}`,
-			body: `${user.fullName || user.email} was ${statusMessage} by ${req.user.fullName || req.user.email}${reason ? ` Reason: ${reason}` : ""}`,
+			body: `${user.fullName || user.email} was ${statusMessage} by ${req.user.fullName || req.user.email}${note ? ` Note: ${note}` : ""}`,
 			type: "user_status_change",
 			data: {
 				userId: user._id,
 				action,
-				reason,
 				note,
 				previousStatus: user.status === "suspended" ? "active" : "suspended",
 				newStatus: user.status,
@@ -409,7 +402,6 @@ export const toggleCustomerStatus = async (req, res) => {
 				isCook: user.isCook,
 				status: user.status,
 				isSuspended: user.status === "suspended",
-				suspensionReason: action === "suspend" ? reason : null,
 				suspensionNote: action === "suspend" ? note : null,
 				recentNotes: user.notes.slice(-3), // Last 3 notes for context
 			},
