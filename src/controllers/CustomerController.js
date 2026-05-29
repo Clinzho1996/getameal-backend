@@ -282,23 +282,143 @@ export const creditCustomerWallet = async (req, res) => {
 export const toggleCustomerStatus = async (req, res) => {
 	try {
 		const { userId } = req.params;
-		const { action } = req.body; // suspend or activate
+		const { action, reason, note, notifyUser = true } = req.body; // suspend or activate
 
 		const user = await User.findById(userId);
 		if (!user) return res.status(404).json({ message: "User not found" });
 
-		await sendPushToUser(
-			userId,
-			`Account ${action === "suspend" ? "Suspended" : "Reactivated"}`,
-			`Your account has been ${action === "suspend" ? "suspended" : "reactivated"} by the admin.`,
-			{ action: `account_${action}` },
-		);
-		user.status = action === "suspend" ? "suspended" : "active";
+		// Prevent suspending admin accounts
+		if (user.role === "admin" && action === "suspend") {
+			return res.status(403).json({ message: "Cannot suspend admin accounts" });
+		}
+
+		let statusMessage = "";
+		let notificationTitle = "";
+		let notificationBody = "";
+
+		if (action === "suspend") {
+			if (!reason) {
+				return res
+					.status(400)
+					.json({ message: "Reason is required for suspension" });
+			}
+
+			// Use the existing 'status' field from your schema
+			user.status = "suspended";
+
+			// Add suspension details to notes array for audit trail
+			user.notes.push({
+				note: `Account suspended by ${req.user.fullName || req.user.email}. Reason: ${reason}${note ? ` Additional note: ${note}` : ""}`,
+				createdAt: new Date(),
+			});
+
+			statusMessage = "suspended";
+			notificationTitle = "🔒 Account Suspended";
+			notificationBody = `Your account has been suspended. Reason: ${reason}. Please contact support if you believe this is an error.`;
+
+			// If the user is also a cook, update their cook profile
+			if (user.isCook) {
+				const cookProfile = await CookProfile.findOne({ userId: user._id });
+				if (cookProfile) {
+					cookProfile.isSuspended = true;
+					cookProfile.isAvailable = false;
+					cookProfile.suspensionReason = reason;
+					cookProfile.suspensionNote = note || null;
+					cookProfile.suspendedAt = new Date();
+					cookProfile.suspendedBy = req.user.id;
+					await cookProfile.save();
+				}
+			}
+		} else if (action === "activate") {
+			// Use the existing 'status' field from your schema
+			user.status = "active";
+
+			// Add reactivation to notes
+			user.notes.push({
+				note: `Account reactivated by ${req.user.fullName || req.user.email}`,
+				createdAt: new Date(),
+			});
+
+			statusMessage = "activated";
+			notificationTitle = "✅ Account Reactivated";
+			notificationBody =
+				"Your account has been reactivated. You can now access all features again.";
+
+			// If the user is also a cook, update their cook profile
+			if (user.isCook) {
+				const cookProfile = await CookProfile.findOne({ userId: user._id });
+				if (cookProfile) {
+					cookProfile.isSuspended = false;
+					cookProfile.isAvailable = true;
+					cookProfile.suspensionReason = null;
+					cookProfile.suspensionNote = null;
+					cookProfile.reactivatedAt = new Date();
+					cookProfile.reactivatedBy = req.user.id;
+					await cookProfile.save();
+				}
+			}
+		} else {
+			return res
+				.status(400)
+				.json({ message: "Invalid action. Use 'suspend' or 'activate'" });
+		}
+
+		// Save user changes
 		await user.save();
 
-		res.status(200).json({ message: `User ${action}ed`, status: user.status });
+		// Send notifications if enabled
+		if (notifyUser) {
+			try {
+				await sendPushToUser(userId, notificationTitle, notificationBody, {
+					type: `account_${action}`,
+					userId: user._id,
+					reason: reason || null,
+				});
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for user ${userId}:`,
+					pushError.message,
+				);
+				// Don't let push failure break the main flow
+			}
+		}
+
+		// Create admin notification for audit trail
+		await createAdminNotification({
+			title: `User Account ${action === "suspend" ? "Suspended" : "Reactivated"}`,
+			body: `${user.fullName || user.email} was ${statusMessage} by ${req.user.fullName || req.user.email}${reason ? ` Reason: ${reason}` : ""}`,
+			type: "user_status_change",
+			data: {
+				userId: user._id,
+				action,
+				reason,
+				note,
+				previousStatus: user.status === "suspended" ? "active" : "suspended",
+				newStatus: user.status,
+			},
+		});
+
+		res.status(200).json({
+			success: true,
+			message: `User ${statusMessage} successfully`,
+			user: {
+				id: user._id,
+				fullName: user.fullName,
+				email: user.email,
+				role: user.role,
+				isCook: user.isCook,
+				status: user.status,
+				isSuspended: user.status === "suspended",
+				suspensionReason: action === "suspend" ? reason : null,
+				suspensionNote: action === "suspend" ? note : null,
+				recentNotes: user.notes.slice(-3), // Last 3 notes for context
+			},
+		});
 	} catch (error) {
-		console.error(error);
-		res.status(500).json({ message: "Server error", error: error.message });
+		console.error("Error in toggleCustomerStatus:", error);
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
 	}
 };

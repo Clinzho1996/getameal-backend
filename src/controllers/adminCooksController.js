@@ -584,12 +584,10 @@ export const changeCookApprovalStatus = async (req, res) => {
 				break;
 
 			default:
-				return res
-					.status(400)
-					.json({
-						message:
-							"Invalid action. Use: setActive, setInactive, verifyKYC, or rejectKYC",
-					});
+				return res.status(400).json({
+					message:
+						"Invalid action. Use: setActive, setInactive, verifyKYC, or rejectKYC",
+				});
 		}
 
 		await cook.save();
@@ -667,92 +665,204 @@ export const suspendCook = async (req, res) => {
 		const cook = await CookProfile.findById(cookId).populate("userId");
 		if (!cook) return res.status(404).json({ message: "Cook not found" });
 
+		let statusMessage = "";
+		let notificationTitle = "";
+		let notificationBody = "";
+
 		if (action === "suspend") {
-			if (!reason)
+			if (!reason) {
 				return res.status(400).json({ message: "Reason is required" });
+			}
+
+			// Suspend the cook profile
 			cook.isSuspended = true;
+			cook.isAvailable = false; // Also mark as unavailable
+			cook.isApproved = false; // Optionally unapprove if needed
 			cook.suspensionReason = reason;
 			cook.suspensionNote = note || null;
+			cook.suspendedAt = new Date();
+			cook.suspendedBy = req.user.id;
 
-			// send email if notifyCook is true
+			// Also update the User model
+			if (cook.userId) {
+				cook.userId.isSuspended = true;
+				cook.userId.suspensionReason = reason;
+				cook.userId.suspensionNote = note || null;
+				cook.userId.suspendedAt = new Date();
+				cook.userId.suspendedBy = req.user.id;
+				await cook.userId.save();
+			}
+
+			statusMessage = "suspended";
+			notificationTitle = "🔒 Your Account Has Been Suspended";
+			notificationBody = `Your account has been suspended by the admin. Reason: ${reason}. Please contact support if you believe this is an error.`;
+
+			// Send email if notifyCook is true
 			if (notifyCook && cook.userId?.email) {
-				const subject = "Your account has been suspended";
-				const message = `<p>Your cooking account has been suspended for the following reason:</p>
-					<p><strong>${reason}</strong></p>
-					${note ? `<p>Note: ${note}</p>` : ""}
-					<p>Please contact support if you believe this is an error.</p>`;
+				const subject = "Your GetAMeal Account Has Been Suspended";
+				const message = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #ff4444;">Account Suspension Notice</h2>
+            <p>Hello ${cook.userId.fullName || cook.cookDisplayName},</p>
+            <p>Your cooking account has been suspended for the following reason:</p>
+            <div style="background-color: #f4f4f4; padding: 15px; border-radius: 5px; margin: 20px 0;">
+              <strong>Reason:</strong> ${reason}
+              ${note ? `<br><strong>Additional Note:</strong> ${note}` : ""}
+            </div>
+            <p>During suspension:</p>
+            <ul>
+              <li>You cannot create new meals</li>
+              <li>Your existing meals will be hidden from customers</li>
+              <li>You cannot receive new orders</li>
+              <li>You cannot access your cook dashboard</li>
+            </ul>
+            <p>If you believe this is an error, please contact our support team.</p>
+            <p style="margin-top: 30px; font-size: 12px; color: #777;">Best regards,<br>GetAMeal Team</p>
+          </div>
+        `;
 
 				await resend.emails.send({
 					from: process.env.EMAIL_FROM,
 					to: cook.userId.email,
 					subject,
-					html: `<h2>Hello ${cook.userId.fullName}</h2>${message}`,
+					html: message,
 				});
 			}
 		} else if (action === "activate") {
+			// Activate the cook profile
 			cook.isSuspended = false;
+			cook.isAvailable = true;
+			cook.isApproved = true; // Reactivate approval
 			cook.suspensionReason = null;
 			cook.suspensionNote = null;
+			cook.suspendedAt = null;
+			cook.suspendedBy = null;
+			cook.reactivatedAt = new Date();
+			cook.reactivatedBy = req.user.id;
+
+			// Also update the User model
+			if (cook.userId) {
+				cook.userId.isSuspended = false;
+				cook.userId.suspensionReason = null;
+				cook.userId.suspensionNote = null;
+				cook.userId.suspendedAt = null;
+				cook.userId.suspendedBy = null;
+				cook.userId.reactivatedAt = new Date();
+				await cook.userId.save();
+			}
+
+			statusMessage = "activated";
+			notificationTitle = "✅ Your Account Has Been Reactivated";
+			notificationBody =
+				"Your account has been reactivated by the admin. You can now access your account and start cooking again.";
+
+			// Send email notification for reactivation
+			if (notifyCook && cook.userId?.email) {
+				const subject = "Your GetAMeal Account Has Been Reactivated";
+				const message = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #4CAF50;">Account Reactivated</h2>
+            <p>Hello ${cook.userId.fullName || cook.cookDisplayName},</p>
+            <p>Great news! Your cooking account has been reactivated by the admin.</p>
+            <p>You can now:</p>
+            <ul>
+              <li>Create and manage your meals</li>
+              <li>Receive orders from customers</li>
+              <li>Access your cook dashboard</li>
+            </ul>
+            <p>Thank you for your patience and understanding.</p>
+            <p style="margin-top: 30px; font-size: 12px; color: #777;">Best regards,<br>GetAMeal Team</p>
+          </div>
+        `;
+
+				await resend.emails.send({
+					from: process.env.EMAIL_FROM,
+					to: cook.userId.email,
+					subject,
+					html: message,
+				});
+			}
 		} else {
-			return res.status(400).json({ message: "Invalid action" });
+			return res
+				.status(400)
+				.json({ message: "Invalid action. Use 'suspend' or 'activate'" });
 		}
 
-		// Send push notification to cook about suspension status change
-		if (cook.userId) {
-			const title =
-				action === "suspend"
-					? "Your Account Has Been Suspended"
-					: "Your Account Has Been Reactivated";
-			const body =
-				action === "suspend"
-					? `Your account has been suspended by the admin for the following reason: ${reason}. Please contact support for more information.`
-					: "Your account has been reactivated by the admin. You can now access your account and start cooking again.";
-
-			try {
-				await sendNotification({
-					userId: cook.userId._id,
-					title,
-					body,
-					type:
-						action === "suspend" ? "account_suspended" : "account_reactivated",
-					data: { cookId: cook._id.toString(), reason },
-				});
-			} catch (pushError) {
-				console.error(
-					`❌ Push notification error for cook ${cook._id}:`,
-					pushError.message,
-				);
-				console.error("Push error details:", pushError);
-				// Don't let push failure break the main flow
-			}
-
-			// Also send push to user if they have a userId
-			try {
-				await sendPushToUser(cook.userId._id, title, body, {
-					type:
-						action === "suspend" ? "account_suspended" : "account_reactivated",
-					cookId: cook._id.toString(),
-					reason,
-				});
-			} catch (pushError) {
-				console.error(
-					`❌ Push notification error for cook ${cook._id}:`,
-					pushError.message,
-				);
-				console.error("Push error details:", pushError);
-				// Don't let push failure break the main flow
-			}
-		}
-
+		// Save the updated cook profile
 		await cook.save();
 
+		// Send push notifications
+		if (cook.userId && notifyCook) {
+			try {
+				await sendPushToUser(
+					cook.userId._id,
+					notificationTitle,
+					notificationBody,
+					{
+						type:
+							action === "suspend"
+								? "account_suspended"
+								: "account_reactivated",
+						cookId: cook._id.toString(),
+						reason: reason || null,
+					},
+				);
+			} catch (pushError) {
+				console.error(
+					`❌ Push notification error for cook ${cook._id}:`,
+					pushError.message,
+				);
+				// Don't let push failure break the main flow
+			}
+		}
+
+		// Create admin notification for audit trail
+		await createAdminNotification({
+			title:
+				action === "suspend"
+					? "Cook Account Suspended"
+					: "Cook Account Reactivated",
+			body: `${cook.cookDisplayName || cook.cookName} was ${statusMessage} by ${req.user.fullName}${reason ? ` Reason: ${reason}` : ""}`,
+			type: "cook_suspension",
+			data: {
+				cookId: cook._id,
+				userId: cook.userId?._id,
+				action,
+				reason,
+				note,
+			},
+		});
+
 		res.status(200).json({
-			message: `Cook ${action} successfully`,
+			success: true,
+			message: `Cook ${statusMessage} successfully`,
 			status: cook.isSuspended ? "suspended" : "active",
+			cook: {
+				id: cook._id,
+				cookDisplayName: cook.cookDisplayName || cook.cookName,
+				isSuspended: cook.isSuspended,
+				isAvailable: cook.isAvailable,
+				isApproved: cook.isApproved,
+				suspensionReason: cook.suspensionReason,
+				suspensionNote: cook.suspensionNote,
+				suspendedAt: cook.suspendedAt,
+				reactivatedAt: cook.reactivatedAt,
+				user: cook.userId
+					? {
+							id: cook.userId._id,
+							isSuspended: cook.userId.isSuspended,
+							fullName: cook.userId.fullName,
+							email: cook.userId.email,
+						}
+					: null,
+			},
 		});
 	} catch (error) {
-		console.error(error);
-		res.status(500).json({ message: "Server error", error: error.message });
+		console.error("Error in suspendCook:", error);
+		res.status(500).json({
+			message: "Server error",
+			error: error.message,
+		});
 	}
 };
 
