@@ -76,6 +76,28 @@ const userSchema = new mongoose.Schema(
 			},
 			select: false,
 		},
+		status: {
+			type: String,
+			enum: ["active", "inactive", "suspended"],
+			default: "active",
+		},
+
+		// Add suspension tracking fields
+		isSuspended: { type: Boolean, default: false },
+		suspensionReason: { type: String, default: null },
+		suspensionNote: { type: String, default: null },
+		suspendedAt: { type: Date, default: null },
+		suspendedBy: {
+			type: mongoose.Schema.Types.ObjectId,
+			ref: "User",
+			default: null,
+		},
+		reactivatedAt: { type: Date, default: null },
+		reactivatedBy: {
+			type: mongoose.Schema.Types.ObjectId,
+			ref: "User",
+			default: null,
+		},
 	},
 	{ timestamps: true },
 );

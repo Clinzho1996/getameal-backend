@@ -13,8 +13,20 @@ export const getCustomers = async (req, res) => {
 		const { status, city, dateFrom, dateTo, sortBy } = req.query;
 
 		const filter = {};
-		if (status) filter.status = status; // active/suspended
+
+		// Filter by status (active/suspended)
+		if (status) {
+			if (status === "active") {
+				filter.status = "active";
+				filter.isSuspended = false;
+			} else if (status === "suspended") {
+				filter.status = "suspended";
+				filter.isSuspended = true;
+			}
+		}
+
 		if (city) filter["location.address"] = { $regex: city, $options: "i" };
+
 		if (dateFrom || dateTo) filter.createdAt = {};
 		if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
 		if (dateTo)
@@ -44,12 +56,16 @@ export const getCustomers = async (req, res) => {
 				const orders = await Order.find({ userId: user._id });
 				const lastOrder =
 					orders.sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+
 				return {
 					_id: user._id,
 					fullName: user.fullName,
 					email: user.email,
 					phone: user.phone,
 					status: user.status || "active",
+					isSuspended: user.isSuspended || false, // ✅ Add this field
+					suspensionReason: user.suspensionReason || null, // Optional
+					suspensionNote: user.suspensionNote || null, // Optional
 					city: user.location?.address || "",
 					joinedAt: user.createdAt,
 					lastActive: lastOrder ? lastOrder.updatedAt : null,
@@ -66,7 +82,7 @@ export const getCustomers = async (req, res) => {
 
 		// Stats
 		const now = new Date();
-		const today = now.setHours(0, 0, 0, 0);
+		const today = new Date(now.setHours(0, 0, 0, 0));
 		const last7Days = new Date();
 		last7Days.setDate(now.getDate() - 7);
 		const last30Days = new Date();
@@ -74,6 +90,14 @@ export const getCustomers = async (req, res) => {
 
 		const stats = {
 			totalCustomers: await User.countDocuments(),
+			activeCustomers: await User.countDocuments({
+				status: "active",
+				isSuspended: false,
+			}),
+			suspendedCustomers: await User.countDocuments({
+				status: "suspended",
+				isSuspended: true,
+			}),
 			newToday: await User.countDocuments({ createdAt: { $gte: today } }),
 			joinedLast7Days: await User.countDocuments({
 				createdAt: { $gte: last7Days },
@@ -120,6 +144,10 @@ export const getCustomerById = async (req, res) => {
 			email: user.email,
 			phone: user.phone,
 			status: user.status || "active",
+			isSuspended: user.isSuspended || false, // ✅ Add this field
+			suspensionReason: user.suspensionReason || null, // Optional
+			suspensionNote: user.suspensionNote || null, // Optional
+			suspendedAt: user.suspendedAt || null, // Optional
 			city: user.location?.address || "",
 			joinedAt: user.createdAt,
 			lastActive: lastOrder ? lastOrder.updatedAt : null,
@@ -293,63 +321,49 @@ export const toggleCustomerStatus = async (req, res) => {
 			return res.status(403).json({ message: "Cannot suspend admin accounts" });
 		}
 
-		let statusMessage = "";
-		let notificationTitle = "";
-		let notificationBody = "";
-
 		if (action === "suspend") {
-			// Use the existing 'status' field from your schema
 			user.status = "suspended";
+			user.isSuspended = true;
 
-			// Add suspension details to notes array for audit trail
-			const suspensionNote = `Account suspended by ${req.user.fullName || req.user.email}${note ? `: ${note}` : ""}`;
 			user.notes.push({
-				note: suspensionNote,
+				note: `Account suspended by ${req.user.fullName || req.user.email}${note ? `: ${note}` : ""}`,
 				createdAt: new Date(),
 			});
 
-			statusMessage = "suspended";
-			notificationTitle = "🔒 Account Suspended";
-			notificationBody = `Your account has been suspended.${note ? ` Reason: ${note}` : " Please contact support for more information."}`;
-
 			// If the user is also a cook, update their cook profile
 			if (user.isCook) {
-				const cookProfile = await CookProfile.findOne({ userId: user._id });
-				if (cookProfile) {
-					cookProfile.isSuspended = true;
-					cookProfile.isAvailable = false;
-					cookProfile.suspensionNote = note || null;
-					cookProfile.suspendedAt = new Date();
-					cookProfile.suspendedBy = req.user.id;
-					await cookProfile.save();
-				}
+				await CookProfile.findOneAndUpdate(
+					{ userId: user._id },
+					{
+						isSuspended: true,
+						isAvailable: false,
+						suspensionNote: note || null,
+						suspendedAt: new Date(),
+						suspendedBy: req.user.id,
+					},
+				);
 			}
 		} else if (action === "activate") {
-			// Use the existing 'status' field from your schema
 			user.status = "active";
+			user.isSuspended = false;
 
-			// Add reactivation to notes
 			user.notes.push({
 				note: `Account reactivated by ${req.user.fullName || req.user.email}`,
 				createdAt: new Date(),
 			});
 
-			statusMessage = "activated";
-			notificationTitle = "✅ Account Reactivated";
-			notificationBody =
-				"Your account has been reactivated. You can now access all features again.";
-
 			// If the user is also a cook, update their cook profile
 			if (user.isCook) {
-				const cookProfile = await CookProfile.findOne({ userId: user._id });
-				if (cookProfile) {
-					cookProfile.isSuspended = false;
-					cookProfile.isAvailable = true;
-					cookProfile.suspensionNote = null;
-					cookProfile.reactivatedAt = new Date();
-					cookProfile.reactivatedBy = req.user.id;
-					await cookProfile.save();
-				}
+				await CookProfile.findOneAndUpdate(
+					{ userId: user._id },
+					{
+						isSuspended: false,
+						isAvailable: true,
+						suspensionNote: null,
+						reactivatedAt: new Date(),
+						reactivatedBy: req.user.id,
+					},
+				);
 			}
 		} else {
 			return res
@@ -357,43 +371,28 @@ export const toggleCustomerStatus = async (req, res) => {
 				.json({ message: "Invalid action. Use 'suspend' or 'activate'" });
 		}
 
-		// Save user changes
 		await user.save();
 
-		// Send notifications if enabled
+		// Send notifications
 		if (notifyUser) {
+			const title =
+				action === "suspend" ? "Account Suspended" : "Account Reactivated";
+			const body =
+				action === "suspend"
+					? `Your account has been suspended.${note ? ` Reason: ${note}` : " Please contact support."}`
+					: "Your account has been reactivated. You can now access all features again.";
+
 			try {
-				await sendPushToUser(userId, notificationTitle, notificationBody, {
-					type: `account_${action}`,
-					userId: user._id,
-					note: note || null,
-				});
+				await sendPushToUser(userId, title, body, { action });
 			} catch (pushError) {
-				console.error(
-					`❌ Push notification error for user ${userId}:`,
-					pushError.message,
-				);
-				// Don't let push failure break the main flow
+				console.error("Push notification error:", pushError.message);
 			}
 		}
 
-		// Create admin notification for audit trail
-		await createAdminNotification({
-			title: `User Account ${action === "suspend" ? "Suspended" : "Reactivated"}`,
-			body: `${user.fullName || user.email} was ${statusMessage} by ${req.user.fullName || req.user.email}${note ? ` Note: ${note}` : ""}`,
-			type: "user_status_change",
-			data: {
-				userId: user._id,
-				action,
-				note,
-				previousStatus: user.status === "suspended" ? "active" : "suspended",
-				newStatus: user.status,
-			},
-		});
-
+		// Return response with isSuspended
 		res.status(200).json({
 			success: true,
-			message: `User ${statusMessage} successfully`,
+			message: `User ${action === "suspend" ? "suspended" : "activated"} successfully`,
 			user: {
 				id: user._id,
 				fullName: user.fullName,
@@ -401,16 +400,12 @@ export const toggleCustomerStatus = async (req, res) => {
 				role: user.role,
 				isCook: user.isCook,
 				status: user.status,
-				isSuspended: user.status === "suspended",
+				isSuspended: user.isSuspended, // ✅ Returns true/false
 				suspensionNote: action === "suspend" ? note : null,
-				recentNotes: user.notes.slice(-3), // Last 3 notes for context
 			},
 		});
 	} catch (error) {
 		console.error("Error in toggleCustomerStatus:", error);
-		res.status(500).json({
-			message: "Server error",
-			error: error.message,
-		});
+		res.status(500).json({ message: "Server error", error: error.message });
 	}
 };
