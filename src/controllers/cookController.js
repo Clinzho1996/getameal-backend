@@ -874,19 +874,318 @@ export const getCookKYCStatus = async (req, res) => {
 // Update cook profile
 export const updateCookProfile = async (req, res) => {
 	try {
+		const userId = req.user.id;
 		const updates = req.body;
 
-		const user = await User.findById(req.user.id);
+		// Find user and cook profile
+		const user = await User.findById(userId);
 		if (!user) return res.status(404).json({ message: "User not found" });
 
-		Object.keys(updates).forEach((key) => {
-			user[key] = updates[key];
+		let cookProfile = await CookProfile.findOne({ userId });
+		if (!cookProfile) {
+			return res.status(404).json({ message: "Cook profile not found" });
+		}
+
+		// Fields that go to User model
+		const userFields = [
+			"fullName",
+			"phone",
+			"bio",
+			"profileImage",
+			"coverImage",
+			"location",
+		];
+
+		// Fields that go to CookProfile model
+		const cookFields = [
+			"firstName",
+			"lastName",
+			"phone",
+			"email",
+			"cookDisplayName",
+			"profilePhoto",
+			"coverPhoto",
+			"bio",
+			"bankDetails",
+			"businessDetails",
+			"kycInfo",
+			"cookAddress",
+			"location",
+			"kitchenPhotos",
+			"availableForCooking",
+			"availablePickup",
+			"schedule",
+			"isAvailable",
+		];
+
+		// Update User model
+		userFields.forEach((field) => {
+			if (updates[field] !== undefined) {
+				user[field] = updates[field];
+			}
 		});
 
-		await user.save();
+		// Also update individual name fields if provided
+		if (updates.firstName) user.firstName = updates.firstName;
+		if (updates.lastName) user.lastName = updates.lastName;
+		if (updates.firstName && updates.lastName) {
+			user.fullName = `${updates.firstName} ${updates.lastName}`;
+		}
+		if (updates.email) user.email = updates.email;
+		if (updates.phone) user.phone = updates.phone;
+		if (updates.bio) user.bio = updates.bio;
 
-		res.json({ message: "Cook profile updated", user });
+		// Update CookProfile model
+		cookFields.forEach((field) => {
+			if (updates[field] !== undefined) {
+				cookProfile[field] = updates[field];
+			}
+		});
+
+		// Handle location separately (GeoJSON format)
+		if (updates.location) {
+			if (typeof updates.location === "object") {
+				cookProfile.location = updates.location;
+				user.location = updates.location;
+			} else if (updates.latitude && updates.longitude) {
+				const locationObj = {
+					type: "Point",
+					coordinates: [
+						parseFloat(updates.longitude),
+						parseFloat(updates.latitude),
+					],
+					address: updates.address || cookProfile.cookAddress,
+				};
+				cookProfile.location = locationObj;
+				user.location = locationObj;
+			}
+		}
+
+		// Handle address separately
+		if (updates.address) {
+			cookProfile.cookAddress = updates.address;
+			if (cookProfile.location) {
+				cookProfile.location.address = updates.address;
+			}
+		}
+
+		// Handle kitchen photos (array)
+		if (updates.kitchenPhotos && Array.isArray(updates.kitchenPhotos)) {
+			cookProfile.kitchenPhotos = updates.kitchenPhotos;
+		}
+
+		// Save both models
+		await user.save();
+		await cookProfile.save();
+
+		// Return updated profile
+		const updatedCookProfile = await CookProfile.findOne({ userId }).populate(
+			"userId",
+			"fullName email phone profileImage",
+		);
+
+		res.json({
+			success: true,
+			message: "Cook profile updated successfully",
+			user: {
+				id: user._id,
+				fullName: user.fullName,
+				email: user.email,
+				phone: user.phone,
+				bio: user.bio,
+				profileImage: user.profileImage,
+				coverImage: user.coverImage,
+				location: user.location,
+			},
+			cookProfile: updatedCookProfile,
+		});
 	} catch (error) {
+		console.error("Error updating cook profile:", error);
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const updateCookProfileWithImages = async (req, res) => {
+	try {
+		const userId = req.user.id;
+		const updates = req.body;
+
+		// Find user and cook profile
+		const user = await User.findById(userId);
+		if (!user) return res.status(404).json({ message: "User not found" });
+
+		let cookProfile = await CookProfile.findOne({ userId });
+		if (!cookProfile) {
+			return res.status(404).json({ message: "Cook profile not found" });
+		}
+
+		// Handle file uploads if any
+		const files = req.files || {};
+
+		// Upload new profile photo if provided
+		if (files.profilePhoto && files.profilePhoto[0]) {
+			const result = await cloudinary.v2.uploader.upload(
+				files.profilePhoto[0].path,
+				{
+					folder: "getameal/cooks/profiles",
+					transformation: [{ width: 500, height: 500, crop: "fill" }],
+				},
+			);
+			updates.profilePhoto = result.secure_url;
+			updates.profileImage = result.secure_url;
+			if (fs.existsSync(files.profilePhoto[0].path)) {
+				fs.unlinkSync(files.profilePhoto[0].path);
+			}
+		}
+
+		// Upload new cover photo if provided
+		if (files.coverPhoto && files.coverPhoto[0]) {
+			const result = await cloudinary.v2.uploader.upload(
+				files.coverPhoto[0].path,
+				{
+					folder: "getameal/cooks/covers",
+					transformation: [{ width: 1200, height: 400, crop: "fill" }],
+				},
+			);
+			updates.coverPhoto = result.secure_url;
+			updates.coverImage = result.secure_url;
+			if (fs.existsSync(files.coverPhoto[0].path)) {
+				fs.unlinkSync(files.coverPhoto[0].path);
+			}
+		}
+
+		// Upload new kitchen photos if provided
+		if (files.kitchenPhotos && files.kitchenPhotos.length > 0) {
+			const kitchenPhotoUrls = [];
+			for (const file of files.kitchenPhotos) {
+				const result = await cloudinary.v2.uploader.upload(file.path, {
+					folder: "getameal/cooks/kitchens",
+					transformation: [{ width: 800, height: 600, crop: "fill" }],
+				});
+				kitchenPhotoUrls.push(result.secure_url);
+				if (fs.existsSync(file.path)) {
+					fs.unlinkSync(file.path);
+				}
+			}
+			updates.kitchenPhotos = kitchenPhotoUrls;
+		}
+
+		// Fields that go to User model
+		const userFields = [
+			"fullName",
+			"phone",
+			"bio",
+			"profileImage",
+			"coverImage",
+			"location",
+		];
+
+		// Fields that go to CookProfile model
+		const cookFields = [
+			"firstName",
+			"lastName",
+			"phone",
+			"email",
+			"cookDisplayName",
+			"profilePhoto",
+			"coverPhoto",
+			"bio",
+			"bankDetails",
+			"businessDetails",
+			"kycInfo",
+			"cookAddress",
+			"location",
+			"kitchenPhotos",
+			"availableForCooking",
+			"availablePickup",
+			"schedule",
+			"isAvailable",
+		];
+
+		// Update User model
+		userFields.forEach((field) => {
+			if (updates[field] !== undefined) {
+				user[field] = updates[field];
+			}
+		});
+
+		if (updates.firstName) user.firstName = updates.firstName;
+		if (updates.lastName) user.lastName = updates.lastName;
+		if (updates.firstName && updates.lastName) {
+			user.fullName = `${updates.firstName} ${updates.lastName}`;
+		}
+		if (updates.email) user.email = updates.email;
+		if (updates.phone) user.phone = updates.phone;
+
+		// Update CookProfile model
+		cookFields.forEach((field) => {
+			if (updates[field] !== undefined) {
+				cookProfile[field] = updates[field];
+			}
+		});
+
+		// Handle location
+		if (updates.location) {
+			if (typeof updates.location === "object") {
+				cookProfile.location = updates.location;
+				user.location = updates.location;
+			} else if (updates.latitude && updates.longitude) {
+				const locationObj = {
+					type: "Point",
+					coordinates: [
+						parseFloat(updates.longitude),
+						parseFloat(updates.latitude),
+					],
+					address: updates.address || cookProfile.cookAddress,
+				};
+				cookProfile.location = locationObj;
+				user.location = locationObj;
+			}
+		}
+
+		if (updates.address) {
+			cookProfile.cookAddress = updates.address;
+			if (cookProfile.location) {
+				cookProfile.location.address = updates.address;
+			}
+		}
+
+		// Save both models
+		await user.save();
+		await cookProfile.save();
+
+		const updatedCookProfile = await CookProfile.findOne({ userId }).populate(
+			"userId",
+			"fullName email phone profileImage",
+		);
+
+		res.json({
+			success: true,
+			message: "Cook profile updated successfully",
+			user: {
+				id: user._id,
+				fullName: user.fullName,
+				email: user.email,
+				phone: user.phone,
+				profileImage: user.profileImage,
+				coverImage: user.coverImage,
+			},
+			cookProfile: updatedCookProfile,
+		});
+	} catch (error) {
+		console.error("Error updating cook profile:", error);
+		// Clean up uploaded files if error occurs
+		if (req.files) {
+			for (const field in req.files) {
+				if (Array.isArray(req.files[field])) {
+					for (const file of req.files[field]) {
+						if (file && file.path && fs.existsSync(file.path)) {
+							fs.unlinkSync(file.path);
+						}
+					}
+				}
+			}
+		}
 		res.status(500).json({ message: error.message });
 	}
 };

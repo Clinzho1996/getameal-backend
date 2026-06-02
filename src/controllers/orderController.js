@@ -66,17 +66,32 @@ export const createOrder = async (req, res) => {
 			{ session },
 		);
 
-		await createAdminNotification({
-			title: "New Order",
-			body: `A new order was placed by ${req.user.fullName}`,
-			type: "order",
-			data: { orderId: order._id },
-		});
-
 		const createdOrder = order[0];
 
 		await session.commitTransaction();
 		session.endSession();
+
+		// ✅ Send push notification to cook about new order
+		const cook = await User.findById(cookId);
+		if (cook) {
+			await sendPushToUser(
+				cook._id,
+				"New Order Received! 🍽️",
+				`${req.user.fullName} just placed an order for ₦${totalAmount.toFixed(2)}`,
+				{
+					type: "new_order",
+					orderId: createdOrder._id.toString(),
+					amount: totalAmount.toString(),
+				},
+			);
+
+			await createAdminNotification({
+				title: "New Order",
+				body: `A new order was placed by ${req.user.fullName} for ₦${totalAmount.toFixed(2)}`,
+				type: "order",
+				data: { orderId: createdOrder._id },
+			});
+		}
 
 		// Handle Paystack
 		if (paymentType === "self") {
@@ -108,14 +123,11 @@ export const createOrder = async (req, res) => {
 			createdOrder.paymentLinkCode = paymentLinkCode;
 			await createdOrder.save();
 
-			// 🔐 Initialize Paystack transaction
-			const paymentReference = `FRIEND-${Date.now()}`;
-
 			const paystackRes = await axios.post(
 				"https://api.paystack.co/transaction/initialize",
 				{
-					email: createdOrder.userEmail || "friend@getameal.com", // fallback
-					amount: createdOrder.totalAmount * 100, // kobo
+					email: createdOrder.userEmail || "friend@getameal.com",
+					amount: createdOrder.totalAmount * 100,
 					reference: paymentReference,
 					callback_url: `${process.env.API_URL}/orders/payment/redirect?orderId=${createdOrder._id}&reference=${paymentReference}`,
 					metadata: {
@@ -300,13 +312,15 @@ export const handlePaymentCallback = async (req, res) => {
 // Update order (Owner or Cook)
 export const updateOrder = async (req, res) => {
 	try {
-		const order = await Order.findById(req.params.id).populate("userId");
+		const order = await Order.findById(req.params.id)
+			.populate("userId", "fullName email")
+			.populate("cookId", "fullName email");
 
 		if (!order) return res.status(404).json({ message: "Order not found" });
 
 		// Only owner or cook can update
 		const isOwner = order.userId._id.toString() === req.user._id.toString();
-		const isCook = order.cookId.toString() === req.user._id.toString();
+		const isCook = order.cookId._id.toString() === req.user._id.toString();
 		if (!isOwner && !isCook) {
 			return res.status(403).json({ message: "Not authorized" });
 		}
@@ -315,7 +329,6 @@ export const updateOrder = async (req, res) => {
 
 		// Allow cooks to update status
 		if (isCook && status) {
-			// Only allow certain transitions
 			const allowedStatuses = [
 				"confirmed",
 				"cooking",
@@ -329,7 +342,51 @@ export const updateOrder = async (req, res) => {
 				return res.status(400).json({ message: "Invalid status update" });
 			}
 
+			const oldStatus = order.status;
 			order.status = status;
+
+			// ✅ Send push notification to user when status changes
+			if (order.userId && oldStatus !== status) {
+				let statusMessage = "";
+				switch (status) {
+					case "confirmed":
+						statusMessage = "Your order has been confirmed! 🎉";
+						break;
+					case "cooking":
+						statusMessage = "Your order is now being cooked! 👨‍🍳";
+						break;
+					case "ready":
+						statusMessage = "Your order is ready for pickup/delivery! ✅";
+						break;
+					case "out_for_delivery":
+						statusMessage = "Your order is out for delivery! 🚚";
+						break;
+					case "delivered":
+						statusMessage =
+							"Your order has been delivered! Enjoy your meal! 🍽️";
+						break;
+					case "picked_up":
+						statusMessage = "Your order has been picked up! Enjoy! 🍽️";
+						break;
+					case "cancelled":
+						statusMessage = "Your order has been cancelled. ❌";
+						break;
+					default:
+						statusMessage = `Your order status has been updated to: ${status}`;
+				}
+
+				await sendPushToUser(
+					order.userId._id,
+					`Order ${status.toUpperCase()} 📦`,
+					statusMessage,
+					{
+						type: "order_status_update",
+						orderId: order._id.toString(),
+						status: status,
+						oldStatus: oldStatus,
+					},
+				);
+			}
 
 			// If cook sets status to out_for_delivery, send OTP
 			if (status === "out_for_delivery") {
@@ -338,39 +395,35 @@ export const updateOrder = async (req, res) => {
 				order.otpExpires = Date.now() + 10 * 60 * 1000; // 10 mins
 
 				await sendOTPEmail(order.userId.email, otp);
+
+				// ✅ Send push notification about OTP
+				await sendPushToUser(
+					order.userId._id,
+					"Delivery OTP Generated 📱",
+					`Your delivery OTP is: ${otp}. Share this with your delivery person.`,
+					{
+						type: "delivery_otp",
+						orderId: order._id.toString(),
+						otp: otp,
+					},
+				);
 			}
 		}
 
 		await createAdminNotification({
 			title: "Order Update",
-			body: `The order status was updated by ${req.user.fullName}`,
+			body: `Order ${order._id} status was updated to ${order.status} by ${req.user.fullName}`,
 			type: "order",
 			data: { orderId: order._id },
 		});
 
-		// Send notification to user
-		if (typeof sendNotification === "function") {
-			sendNotification(
-				order.userId,
-				"Order Update",
-				`The order status was updated by ${req.user.fullName}`,
-			);
-		}
-
-		if (typeof sendPushToUser === "function") {
-			await sendPushToUser(
-				order.userId,
-				"Order Update",
-				`The order status was updated by ${req.user.fullName}`,
-			);
-		}
 		// Apply other updates for owner or cook
 		Object.assign(order, otherUpdates);
-
 		await order.save();
 
 		res.json({ message: "Order updated successfully", order });
 	} catch (error) {
+		console.error("Error in updateOrder:", error);
 		res.status(500).json({ message: error.message });
 	}
 };
@@ -468,26 +521,63 @@ export const getOrderById = async (req, res) => {
 
 // Update payment status
 export const updatePaymentStatus = async (req, res) => {
-	const order = await Order.findById(req.params.id);
-	if (!order) return res.status(404).json({ message: "Order not found" });
+	try {
+		const order = await Order.findById(req.params.id)
+			.populate("userId", "fullName email")
+			.populate("cookId", "fullName email");
 
-	order.paymentStatus = "paid";
-	order.status = "confirmed";
-	await order.save();
+		if (!order) return res.status(404).json({ message: "Order not found" });
 
-	emitOrderUpdate(order);
-	await sendNotification(
-		order.userId,
-		"Payment successful, order confirmed",
-		"Your payment was successful and your order is confirmed",
-	);
-	await sendPushToUser(
-		order.userId,
-		"Payment successful",
-		"Your order has been confirmed",
-	);
+		order.paymentStatus = "paid";
+		order.status = "confirmed";
+		await order.save();
 
-	res.json(order);
+		// ✅ Send push notification to cook
+		if (order.cookId) {
+			await sendPushToUser(
+				order.cookId._id,
+				"Payment Confirmed! 💰",
+				`Payment of ₦${order.totalAmount.toFixed(2)} has been confirmed for order #${order._id.toString().slice(-6)}`,
+				{
+					type: "payment_confirmed",
+					orderId: order._id.toString(),
+					amount: order.totalAmount.toString(),
+				},
+			);
+		}
+
+		// ✅ Send push notification to user
+		if (order.userId) {
+			await sendPushToUser(
+				order.userId._id,
+				"Payment Successful! 🎉",
+				`Your payment of ₦${order.totalAmount.toFixed(2)} has been confirmed. Your order is now confirmed!`,
+				{
+					type: "payment_success",
+					orderId: order._id.toString(),
+					amount: order.totalAmount.toString(),
+				},
+			);
+		}
+
+		// Emit socket update if available
+		if (typeof emitOrderUpdate === "function") {
+			emitOrderUpdate(order);
+		}
+
+		// Send admin notification
+		await createAdminNotification({
+			title: "Payment Confirmed",
+			body: `Payment of ₦${order.totalAmount.toFixed(2)} confirmed for order ${order._id}`,
+			type: "payment",
+			data: { orderId: order._id },
+		});
+
+		res.json(order);
+	} catch (error) {
+		console.error("Error in updatePaymentStatus:", error);
+		res.status(500).json({ message: error.message });
+	}
 };
 
 // Send OTP when order is out for delivery
@@ -529,7 +619,9 @@ export const sendDeliveryOTP = async (req, res) => {
 export const verifyDeliveryOTP = async (req, res) => {
 	try {
 		const { otp } = req.body;
-		const order = await Order.findById(req.params.id);
+		const order = await Order.findById(req.params.id)
+			.populate("userId", "fullName email")
+			.populate("cookId", "fullName email");
 
 		if (!order) return res.status(404).json({ message: "Order not found" });
 		if (!order.otpCode)
@@ -552,7 +644,6 @@ export const verifyDeliveryOTP = async (req, res) => {
 
 		// ---- CREDIT COOK WALLET AND DEDUCT COMMISSION ----
 		const cook = await User.findById(order.cookId);
-
 		const commissionRate = 0.1; // 10% commission
 		const commission = order.totalAmount * commissionRate;
 		const cookAmount = order.totalAmount - commission;
@@ -568,17 +659,39 @@ export const verifyDeliveryOTP = async (req, res) => {
 			reference: order._id.toString(),
 		});
 
-		sendNotification(
-			cook._id,
-			"Order Completed",
-			`You earned ₦${cookAmount.toFixed(2)} from an order!`,
-		);
-
+		// ✅ Send push notification to cook
 		await sendPushToUser(
 			cook._id,
-			"Order Completed",
-			`You earned ₦${cookAmount.toFixed(2)} from an order!`,
+			"Order Completed & Payment Received! 💰",
+			`You earned ₦${cookAmount.toFixed(2)} from order #${order._id.toString().slice(-6)}. Commission: ₦${commission.toFixed(2)}`,
+			{
+				type: "order_completed",
+				orderId: order._id.toString(),
+				amount: cookAmount.toString(),
+				commission: commission.toString(),
+			},
 		);
+
+		// ✅ Send push notification to user
+		if (order.userId) {
+			await sendPushToUser(
+				order.userId._id,
+				"Order Completed! 🎉",
+				`Your order has been completed. Thank you for choosing GetAMeal!`,
+				{
+					type: "order_completed",
+					orderId: order._id.toString(),
+				},
+			);
+		}
+
+		// Send admin notification
+		await createAdminNotification({
+			title: "Order Completed",
+			body: `Order ${order._id} completed. Cook earned ₦${cookAmount.toFixed(2)}`,
+			type: "order",
+			data: { orderId: order._id, cookAmount },
+		});
 
 		res.json({
 			message: "Order completed successfully",
@@ -586,6 +699,7 @@ export const verifyDeliveryOTP = async (req, res) => {
 			cookWalletBalance: cook.walletBalance,
 		});
 	} catch (error) {
+		console.error("Error in verifyDeliveryOTP:", error);
 		res.status(500).json({ message: error.message });
 	}
 };
@@ -695,6 +809,45 @@ export const getCookOrderStats = async (req, res) => {
 
 		res.json(formatted);
 	} catch (error) {
+		res.status(500).json({ message: error.message });
+	}
+};
+
+export const sendOrderReminderToCook = async (req, res) => {
+	try {
+		const { orderId } = req.params;
+
+		const order = await Order.findById(orderId)
+			.populate("cookId", "fullName email")
+			.populate("userId", "fullName");
+
+		if (!order) {
+			return res.status(404).json({ message: "Order not found" });
+		}
+
+		// Only send if order is pending or confirmed
+		if (!["pending", "confirmed"].includes(order.status)) {
+			return res.status(400).json({
+				message: "Reminder can only be sent for pending or confirmed orders",
+			});
+		}
+
+		await sendPushToUser(
+			order.cookId._id,
+			"⏰ Order Reminder",
+			`You have a pending order from ${order.userId.fullName} for ₦${order.totalAmount.toFixed(2)}. Please confirm or start cooking.`,
+			{
+				type: "order_reminder",
+				orderId: order._id.toString(),
+			},
+		);
+
+		res.json({
+			success: true,
+			message: "Reminder sent to cook",
+		});
+	} catch (error) {
+		console.error("Error sending reminder:", error);
 		res.status(500).json({ message: error.message });
 	}
 };

@@ -13,6 +13,7 @@ import {
 	getCookKYCStatus,
 	referCook,
 	updateCookProfile,
+	updateCookProfileWithImages,
 } from "../controllers/cookController.js";
 import protect from "../middleware/auth.js";
 
@@ -31,6 +32,17 @@ router.post(
 		{ name: "cacImage", maxCount: 1 },
 	]),
 	becomeCook,
+);
+
+router.put(
+	"/profile-with-images",
+	protect,
+	upload.fields([
+		{ name: "profilePhoto", maxCount: 1 },
+		{ name: "coverPhoto", maxCount: 1 },
+		{ name: "kitchenPhotos", maxCount: 3 },
+	]),
+	updateCookProfileWithImages,
 );
 router.get("/kyc-status", protect, getCookKYCStatus);
 router.post("/referral", protect, referCook); // New referral route
