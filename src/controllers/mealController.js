@@ -483,7 +483,7 @@ export const getMealsByDateForCook = async (req, res) => {
 
 export const updateMealStatus = async (req, res) => {
 	try {
-		const { status } = req.body; // "cooking" or "ready"
+		const { status } = req.body; // "cooking" or "ready" or "closed"
 		const { id } = req.params;
 
 		if (!["cooking", "ready", "closed", "open"].includes(status)) {
@@ -498,24 +498,94 @@ export const updateMealStatus = async (req, res) => {
 			return res.status(403).json({ message: "Not authorized" });
 		}
 
+		const oldStatus = meal.status;
 		meal.status = status;
 		await meal.save();
 
+		// ✅ MAP MEAL STATUS TO ORDER STATUS BASED ON YOUR FLOW
+		let orderStatus = "";
+		let notificationMessage = "";
+
+		if (status === "cooking") {
+			orderStatus = "cooking";
+			notificationMessage = "The cook has started preparing your meal!";
+		} else if (status === "ready") {
+			orderStatus = "ready";
+			notificationMessage =
+				"Your meal is ready! It will be out for delivery soon.";
+		} else if (status === "closed") {
+			orderStatus = "cancelled";
+			notificationMessage = "Your meal order has been cancelled.";
+		}
+
+		if (orderStatus) {
+			// Find all orders containing this meal
+			const orders = await Order.find({
+				"mealItems.mealId": id,
+				status: { $nin: ["delivered", "picked_up", "cancelled"] }, // Only update active orders
+			});
+
+			let updatedOrders = 0;
+
+			for (const order of orders) {
+				const oldOrderStatus = order.status;
+				order.status = orderStatus;
+
+				// If meal is ready, also update individual meal items if needed
+				if (status === "ready") {
+					// You could also update something here if needed
+				}
+
+				await order.save();
+				updatedOrders++;
+
+				// Send push notification to customer about order status update
+				await sendPushToUser(
+					order.userId,
+					`Order ${orderStatus.charAt(0).toUpperCase() + orderStatus.slice(1)}`,
+					`${notificationMessage} Order #${order._id.toString().slice(-6)}`,
+					{
+						orderId: order._id,
+						status: orderStatus,
+						mealId: meal._id,
+						mealName: meal.name,
+					},
+				);
+
+				console.log(
+					`✅ Order ${order._id} updated from ${oldOrderStatus} to ${orderStatus}`,
+				);
+			}
+
+			console.log(
+				`✅ Updated ${updatedOrders} orders for meal ${meal.name} to status: ${orderStatus}`,
+			);
+		}
+
 		await createAdminNotification({
 			title: "Meal Status Updated",
-			body: `The meal "${meal.name}" status was updated to "${status}" by ${req.user.fullName}`,
+			body: `The meal "${meal.name}" status was updated from "${oldStatus}" to "${status}" by ${req.user.fullName}`,
 			type: "meal",
-			data: { mealId: meal._id, status },
+			data: { mealId: meal._id, status, oldStatus },
 		});
 
 		await sendPushToUser(
 			req.user._id,
 			"Meal Status Updated",
-			`The meal "${meal.name}" status was updated to "${status}" by ${req.user.fullName}`,
+			`Your meal "${meal.name}" status was updated from "${oldStatus}" to "${status}"`,
 		);
 
-		res.json({ message: "Meal status updated", meal });
+		res.json({
+			message: "Meal status updated",
+			meal,
+			orderStatusUpdated: orderStatus ? true : false,
+			statusFlow: {
+				mealStatus: status,
+				orderStatus: orderStatus || "No change",
+			},
+		});
 	} catch (error) {
+		console.error("Error updating meal status:", error);
 		res.status(500).json({ message: error.message });
 	}
 };

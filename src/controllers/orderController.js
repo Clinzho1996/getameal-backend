@@ -313,14 +313,15 @@ export const handlePaymentCallback = async (req, res) => {
 export const updateOrder = async (req, res) => {
 	try {
 		const order = await Order.findById(req.params.id)
-			.populate("userId", "fullName email")
-			.populate("cookId", "fullName email");
+			.populate("userId", "fullName email phone")
+			.populate("cookId", "fullName email phone");
 
 		if (!order) return res.status(404).json({ message: "Order not found" });
 
 		// Only owner or cook can update
 		const isOwner = order.userId._id.toString() === req.user._id.toString();
 		const isCook = order.cookId._id.toString() === req.user._id.toString();
+
 		if (!isOwner && !isCook) {
 			return res.status(403).json({ message: "Not authorized" });
 		}
@@ -338,46 +339,88 @@ export const updateOrder = async (req, res) => {
 				"picked_up",
 				"cancelled",
 			];
+
 			if (!allowedStatuses.includes(status)) {
 				return res.status(400).json({ message: "Invalid status update" });
 			}
 
+			// ✅ Check if status transition is valid based on current status
+			const validTransitions = {
+				pending: ["confirmed", "cancelled"],
+				confirmed: ["cooking", "cancelled"],
+				cooking: ["ready", "cancelled"],
+				ready: ["out_for_delivery", "picked_up", "cancelled"],
+				out_for_delivery: ["delivered", "cancelled"],
+				delivered: [],
+				picked_up: [],
+				cancelled: [],
+			};
+
+			const allowedNextStatuses = validTransitions[order.status] || [];
+			if (!allowedNextStatuses.includes(status) && order.status !== status) {
+				return res.status(400).json({
+					message: `Cannot transition from ${order.status} to ${status}. Allowed: ${allowedNextStatuses.join(", ")}`,
+				});
+			}
+
 			const oldStatus = order.status;
+
+			// Don't update if status is the same
+			if (oldStatus === status) {
+				return res.status(400).json({ message: `Order is already ${status}` });
+			}
+
 			order.status = status;
 
 			// ✅ Send push notification to user when status changes
 			if (order.userId && oldStatus !== status) {
 				let statusMessage = "";
+				let notificationTitle = "";
+
 				switch (status) {
 					case "confirmed":
-						statusMessage = "Your order has been confirmed! 🎉";
+						notificationTitle = "✅ Order Confirmed";
+						statusMessage =
+							"Your order has been confirmed! The cook will start preparing your meal soon. 🎉";
 						break;
 					case "cooking":
-						statusMessage = "Your order is now being cooked! 👨‍🍳";
+						notificationTitle = "👨‍🍳 Order Being Cooked";
+						statusMessage =
+							"Great news! The cook has started preparing your meal. It will be ready soon!";
 						break;
 					case "ready":
-						statusMessage = "Your order is ready for pickup/delivery! ✅";
+						notificationTitle = "✅ Order Ready";
+						statusMessage =
+							"Your order is ready for pickup/delivery! Please arrange for pickup or delivery. ✅";
 						break;
 					case "out_for_delivery":
-						statusMessage = "Your order is out for delivery! 🚚";
+						notificationTitle = "🚚 Order Out for Delivery";
+						statusMessage =
+							"Your order is out for delivery! It should arrive shortly. 🚚";
 						break;
 					case "delivered":
+						notificationTitle = "🍽️ Order Delivered";
 						statusMessage =
 							"Your order has been delivered! Enjoy your meal! 🍽️";
 						break;
 					case "picked_up":
-						statusMessage = "Your order has been picked up! Enjoy! 🍽️";
+						notificationTitle = "📦 Order Picked Up";
+						statusMessage =
+							"You have picked up your order! Enjoy your meal! 🍽️";
 						break;
 					case "cancelled":
-						statusMessage = "Your order has been cancelled. ❌";
+						notificationTitle = "❌ Order Cancelled";
+						statusMessage =
+							"Your order has been cancelled. If this was a mistake, please contact support. ❌";
 						break;
 					default:
+						notificationTitle = "📦 Order Update";
 						statusMessage = `Your order status has been updated to: ${status}`;
 				}
 
 				await sendPushToUser(
 					order.userId._id,
-					`Order ${status.toUpperCase()} 📦`,
+					notificationTitle,
 					statusMessage,
 					{
 						type: "order_status_update",
@@ -386,42 +429,81 @@ export const updateOrder = async (req, res) => {
 						oldStatus: oldStatus,
 					},
 				);
+
+				console.log(
+					`✅ Push notification sent to user ${order.userId._id} for order status: ${status}`,
+				);
 			}
 
-			// If cook sets status to out_for_delivery, send OTP
-			if (status === "out_for_delivery") {
+			// If cook sets status to out_for_delivery, generate OTP for delivery verification
+			if (status === "out_for_delivery" && !order.otpCode) {
 				const otp = Math.floor(1000 + Math.random() * 9000).toString();
 				order.otpCode = otp;
 				order.otpExpires = Date.now() + 10 * 60 * 1000; // 10 mins
 
+				// Send OTP via email
 				await sendOTPEmail(order.userId.email, otp);
 
-				// ✅ Send push notification about OTP
+				// Send push notification about OTP
 				await sendPushToUser(
 					order.userId._id,
 					"Delivery OTP Generated 📱",
-					`Your delivery OTP is: ${otp}. Share this with your delivery person.`,
+					`Your delivery OTP is: ${otp}. Share this with your delivery person to verify delivery.`,
 					{
 						type: "delivery_otp",
 						orderId: order._id.toString(),
 						otp: otp,
 					},
 				);
+
+				console.log(`✅ OTP ${otp} generated for order ${order._id}`);
+			}
+
+			// If order is delivered or picked up, mark as complete
+			if (status === "delivered" || status === "picked_up") {
+				order.paymentStatus = "paid";
+				// You could also release payment to cook here
 			}
 		}
 
+		// Allow customers to update certain fields (like cancellation note)
+		if (isOwner && otherUpdates.note) {
+			order.note = otherUpdates.note;
+		}
+
+		// Create admin notification for audit trail
 		await createAdminNotification({
-			title: "Order Update",
-			body: `Order ${order._id} status was updated to ${order.status} by ${req.user.fullName}`,
+			title: "Order Status Updated",
+			body: `Order #${order._id.toString().slice(-6)} status was updated from ${oldStatus || order.status} to ${order.status} by ${req.user.fullName}`,
 			type: "order",
-			data: { orderId: order._id },
+			data: {
+				orderId: order._id,
+				userId: order.userId._id,
+				cookId: order.cookId._id,
+				oldStatus: oldStatus,
+				newStatus: order.status,
+			},
 		});
 
 		// Apply other updates for owner or cook
 		Object.assign(order, otherUpdates);
 		await order.save();
 
-		res.json({ message: "Order updated successfully", order });
+		// Populate additional data for response
+		const updatedOrder = await Order.findById(order._id)
+			.populate("userId", "fullName email phone")
+			.populate("cookId", "fullName email phone")
+			.populate("mealItems.mealId", "name price images");
+
+		res.json({
+			success: true,
+			message: "Order updated successfully",
+			order: updatedOrder,
+			statusTransition: {
+				from: oldStatus || order.status,
+				to: order.status,
+			},
+		});
 	} catch (error) {
 		console.error("Error in updateOrder:", error);
 		res.status(500).json({ message: error.message });
@@ -478,22 +560,62 @@ export const getMyOrders = async (req, res) => {
 	console.log("RESOLVED USER ID:", userId);
 
 	const orders = await Order.find({ userId })
-		.populate("mealItems.mealId")
-		.populate("cookId")
+		.populate({
+			path: "mealItems.mealId",
+			populate: {
+				path: "cookId",
+				select: "fullName profileImage",
+			},
+		})
+		.populate("cookId", "fullName email phone profileImage")
 		.sort({ createdAt: -1 });
 
-	console.log("FOUND ORDERS:", orders.length);
+	// ✅ Add cook profile with kitchen address to each order
+	const ordersWithCookProfile = await Promise.all(
+		orders.map(async (order) => {
+			const orderObj = order.toObject();
 
-	res.json(orders);
+			// Get cook profile for the cook
+			const cookProfile = await CookProfile.findOne({
+				userId: order.cookId._id,
+			}).select(
+				"cookAddress location cookDisplayName profilePhoto phone email",
+			);
+
+			orderObj.cookProfile = cookProfile || null;
+
+			// Also add kitchen address to each meal item
+			if (orderObj.mealItems && orderObj.mealItems.length > 0) {
+				for (const item of orderObj.mealItems) {
+					if (item.mealId && item.mealId.cookId) {
+						item.kitchenAddress = cookProfile?.cookAddress || null;
+						item.kitchenLocation = cookProfile?.location || null;
+					}
+				}
+			}
+
+			return orderObj;
+		}),
+	);
+
+	console.log("FOUND ORDERS:", ordersWithCookProfile.length);
+
+	res.json(ordersWithCookProfile);
 };
 
 // Get single order by ID
 export const getOrderById = async (req, res) => {
 	try {
 		const order = await Order.findById(req.params.id)
-			.populate("mealItems.mealId")
-			.populate("cookId")
-			.populate("userId");
+			.populate({
+				path: "mealItems.mealId",
+				populate: {
+					path: "cookId",
+					select: "fullName profileImage",
+				},
+			})
+			.populate("cookId", "fullName email phone profileImage")
+			.populate("userId", "fullName email phone profileImage");
 
 		if (!order) {
 			return res.status(404).json({
@@ -511,7 +633,29 @@ export const getOrderById = async (req, res) => {
 			});
 		}
 
-		res.json(order);
+		// ✅ Add cook profile with kitchen address
+		const orderObj = order.toObject();
+
+		const cookProfile = await CookProfile.findOne({
+			userId: order.cookId._id,
+		}).select(
+			"cookAddress location cookDisplayName profilePhoto phone email isApproved rating",
+		);
+
+		orderObj.cookProfile = cookProfile || null;
+
+		// Add kitchen address to each meal item
+		if (orderObj.mealItems && orderObj.mealItems.length > 0) {
+			for (const item of orderObj.mealItems) {
+				if (item.mealId && item.mealId.cookId) {
+					item.kitchenAddress = cookProfile?.cookAddress || null;
+					item.kitchenLocation = cookProfile?.location || null;
+					item.cookDisplayName = cookProfile?.cookDisplayName || null;
+				}
+			}
+		}
+
+		res.json(orderObj);
 	} catch (error) {
 		res.status(500).json({
 			message: error.message,
