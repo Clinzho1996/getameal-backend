@@ -4,6 +4,7 @@ import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
+import CookProfile from "../models/CookProfile.js";
 import { sendOTPEmail } from "../utils/emailService.js";
 import { emitOrderUpdate } from "../utils/Notification.js";
 
