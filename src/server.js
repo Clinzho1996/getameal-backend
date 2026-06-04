@@ -50,40 +50,75 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 
 // Socket.io
-// Add to your socket.io configuration
+// Update your socket.io configuration
 io.on("connection", (socket) => {
-	// Existing join/message events
-	socket.on("join", (room) => socket.join(room));
-	socket.on("message", (data) => io.to(data.room).emit("message", data));
-
-	// User initiating call
-	socket.on("call-user", ({ offer, to, from, channelName }) => {
-		io.to(to).emit("incoming-call", {
-			offer,
-			from,
-			channelName,
-		});
+	// Store user info
+	socket.on("user-online", (userId) => {
+		socket.userId = userId;
+		socket.join(`user_${userId}`);
 	});
 
-	// User answering call
-	socket.on("answer-call", ({ answer, to, from }) => {
-		io.to(to).emit("call-answered", {
+	// Join order room for call signaling
+	socket.on("join-order-room", ({ orderId, userId }) => {
+		socket.join(`order_${orderId}`);
+		socket.to(`order_${orderId}`).emit("user-joined-call-room", { userId });
+	});
+
+	// ✅ FIXED: Call signaling with orderId
+	socket.on(
+		"call-user",
+		({ offer, to, from, fromName, channelName, orderId }) => {
+			// Forward call to the recipient with orderId
+			io.to(`user_${to}`).emit("incoming-call", {
+				offer,
+				from,
+				fromName,
+				channelName,
+				orderId, // ✅ Now included
+				timestamp: Date.now(),
+			});
+		},
+	);
+
+	// Answer call
+	socket.on("answer-call", ({ answer, to, from, orderId }) => {
+		io.to(`user_${to}`).emit("call-answered", {
 			answer,
 			from,
+			orderId,
 		});
 	});
 
 	// ICE candidate exchange
-	socket.on("ice-candidate", ({ candidate, to, from }) => {
-		io.to(to).emit("ice-candidate", {
+	socket.on("ice-candidate", ({ candidate, to, from, orderId }) => {
+		io.to(`user_${to}`).emit("ice-candidate", {
 			candidate,
 			from,
+			orderId,
 		});
 	});
 
 	// End call
-	socket.on("end-call", ({ to, from }) => {
-		io.to(to).emit("call-ended", { from });
+	socket.on("end-call", ({ to, from, orderId }) => {
+		io.to(`user_${to}`).emit("call-ended", {
+			from,
+			orderId,
+		});
+	});
+
+	// Reject call
+	socket.on("reject-call", ({ to, from, orderId }) => {
+		io.to(`user_${to}`).emit("call-rejected", {
+			from,
+			orderId,
+		});
+	});
+
+	socket.on("disconnect", () => {
+		if (socket.userId) {
+			// Notify others that user is offline
+			socket.broadcast.emit("user-offline", { userId: socket.userId });
+		}
 	});
 });
 
