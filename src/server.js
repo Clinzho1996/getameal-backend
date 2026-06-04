@@ -50,9 +50,41 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 
 // Socket.io
+// Add to your socket.io configuration
 io.on("connection", (socket) => {
+	// Existing join/message events
 	socket.on("join", (room) => socket.join(room));
 	socket.on("message", (data) => io.to(data.room).emit("message", data));
+
+	// User initiating call
+	socket.on("call-user", ({ offer, to, from, channelName }) => {
+		io.to(to).emit("incoming-call", {
+			offer,
+			from,
+			channelName,
+		});
+	});
+
+	// User answering call
+	socket.on("answer-call", ({ answer, to, from }) => {
+		io.to(to).emit("call-answered", {
+			answer,
+			from,
+		});
+	});
+
+	// ICE candidate exchange
+	socket.on("ice-candidate", ({ candidate, to, from }) => {
+		io.to(to).emit("ice-candidate", {
+			candidate,
+			from,
+		});
+	});
+
+	// End call
+	socket.on("end-call", ({ to, from }) => {
+		io.to(to).emit("call-ended", { from });
+	});
 });
 
 const PORT = process.env.PORT || 5000;
