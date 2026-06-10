@@ -217,7 +217,6 @@ export const signupVerify = async (req, res) => {
 	}
 };
 
-// STEP 3: Complete Signup
 export const signupComplete = async (req, res) => {
 	try {
 		const { name, email, phone } = req.body;
@@ -228,6 +227,40 @@ export const signupComplete = async (req, res) => {
 			});
 		}
 
+		// Check if user already exists (for social auth users)
+		const existingUser = await User.findOne({ email });
+
+		if (existingUser) {
+			// If user exists and is already verified (social auth user)
+			if (existingUser.isVerified && existingUser.provider) {
+				const token = generateToken(existingUser._id);
+
+				// Update name and phone if provided and not already set
+				if (name && !existingUser.fullName) {
+					existingUser.fullName = name;
+				}
+				if (phone && !existingUser.phone) {
+					existingUser.phone = phone;
+				}
+
+				if (existingUser.isModified()) {
+					await existingUser.save();
+				}
+
+				return res.status(200).json({
+					message: "Login successful",
+					token,
+					user: existingUser,
+				});
+			}
+
+			// If user exists but not verified (shouldn't happen)
+			return res.status(409).json({
+				message: "Account already exists. Please login instead.",
+			});
+		}
+
+		// For normal email signup: Check OTP verification
 		const otpRecord = await OTP.findOne({
 			email,
 			verified: true,
@@ -235,24 +268,30 @@ export const signupComplete = async (req, res) => {
 
 		if (!otpRecord) {
 			return res.status(400).json({
-				message: "OTP not verified. Please verify OTP first.",
+				message: "Email not verified. Please verify your email with OTP first.",
 			});
 		}
 
-		const existingUser = await User.findOne({ email });
-
-		if (existingUser) {
+		// Double-check user doesn't exist (race condition)
+		const userExists = await User.findOne({ email });
+		if (userExists) {
 			return res.status(409).json({
 				message: "Account already exists",
 			});
 		}
 
+		// Create new user for email signup
 		const user = await User.create({
 			fullName: name,
 			email,
-			phone,
+			phone: phone || "",
 			isVerified: true,
+			provider: "email",
+			status: "active",
 		});
+
+		// Clean up OTP record
+		await OTP.deleteOne({ _id: otpRecord._id });
 
 		const token = generateToken(user._id);
 
@@ -262,6 +301,7 @@ export const signupComplete = async (req, res) => {
 			user,
 		});
 	} catch (error) {
+		console.error("Signup complete error:", error);
 		res.status(500).json({
 			message: "Server error",
 			error: error.message,
@@ -272,13 +312,16 @@ export const signupComplete = async (req, res) => {
 // STEP 1: Login Init
 export const loginInit = async (req, res) => {
 	try {
-		const { email } = req.body;
+		let { email } = req.body;
 
 		if (!email) {
 			return res.status(400).json({
 				message: "Email is required",
 			});
 		}
+
+		// Normalize email to lowercase for case-insensitive comparison
+		email = email.toLowerCase().trim();
 
 		const user = await User.findOne({ email });
 
@@ -331,14 +374,14 @@ export const loginInit = async (req, res) => {
 			}
 
 			// Don't block pending approval - just note it in response
-			const approvalStatus = cookProfile?.isApproved ? "approved" : "pending";
+			// const approvalStatus = cookProfile?.isApproved ? "approved" : "pending";
 			// Continue with login even if not approved
 		}
 
 		const code = generateOTP();
 
 		await OTP.create({
-			email,
+			email, // Store normalized email
 			code,
 			expiresAt: Date.now() + 10 * 60 * 1000,
 		});

@@ -1,10 +1,10 @@
 import axios from "axios";
 import mongoose from "mongoose";
+import CookProfile from "../models/CookProfile.js";
 import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
-import CookProfile from "../models/CookProfile.js";
 import { sendOTPEmail } from "../utils/emailService.js";
 import { emitOrderUpdate } from "../utils/Notification.js";
 
@@ -62,6 +62,8 @@ export const createOrder = async (req, res) => {
 					note,
 					paymentType,
 					paymentReference,
+					paymentStatus: "pending", // Explicitly set as pending
+					status: "pending", // Order stays pending until payment
 				},
 			],
 			{ session },
@@ -72,29 +74,7 @@ export const createOrder = async (req, res) => {
 		await session.commitTransaction();
 		session.endSession();
 
-		// ✅ Send push notification to cook about new order
-		const cook = await User.findById(cookId);
-		if (cook) {
-			await sendPushToUser(
-				cook._id,
-				"New Order Received! 🍽️",
-				`${req.user.fullName} just placed an order for ₦${totalAmount.toFixed(2)}`,
-				{
-					type: "new_order",
-					orderId: createdOrder._id.toString(),
-					amount: totalAmount.toString(),
-				},
-			);
-
-			await createAdminNotification({
-				title: "New Order",
-				body: `A new order was placed by ${req.user.fullName} for ₦${totalAmount.toFixed(2)}`,
-				type: "order",
-				data: { orderId: createdOrder._id },
-			});
-		}
-
-		// Handle Paystack
+		// Handle Paystack (Self payment)
 		if (paymentType === "self") {
 			const paystack = await axios.post(
 				"https://api.paystack.co/transaction/initialize",
@@ -113,6 +93,7 @@ export const createOrder = async (req, res) => {
 			return res.json({
 				order: createdOrder,
 				paymentUrl: paystack.data.data.authorization_url,
+				message: "Complete payment to confirm your order",
 			});
 		}
 
@@ -145,19 +126,26 @@ export const createOrder = async (req, res) => {
 				},
 			);
 
+			// ✅ DON'T send notification here - only after payment is verified
+
 			return res.json({
 				order: createdOrder,
 				paymentLinkCode,
 				deepLink: `getameal://payment-friend/pay/${paymentLinkCode}`,
 				paystackUrl: paystackRes.data.data.authorization_url,
 				reference: paymentReference,
+				message: "Share payment link with friend to complete payment",
 			});
 		}
 
-		res.json({ order: createdOrder });
+		res.json({
+			order: createdOrder,
+			message: "Order created successfully",
+		});
 	} catch (error) {
 		await session.abortTransaction();
 		session.endSession();
+		console.error("Create order error:", error);
 		res.status(400).json({ message: error.message });
 	}
 };
@@ -257,41 +245,51 @@ export const handlePaymentCallback = async (req, res) => {
 
 		// ✅ Update order
 		order.paymentStatus = "paid";
-		order.status = "confirmed";
+		order.status = "confirmed"; // Only confirm AFTER payment
 		order.paymentReference = reference;
 
 		await order.save();
 
-		// ✅ Emit realtime update (if you use sockets)
-		if (typeof emitOrderUpdate === "function") {
-			emitOrderUpdate(order);
-		}
+		// ✅ 🆕 SEND NOTIFICATIONS HERE - ONLY AFTER SUCCESSFUL PAYMENT
 
-		// ✅ Notify user
-		if (typeof sendNotification === "function") {
-			sendNotification(
-				order.userId,
-				"Payment successful",
-				"Your order has been confirmed",
-			);
-
+		// 1. Send notification to COOK about the new paid order
+		if (order.cookId) {
 			await sendPushToUser(
-				order.userId,
-				"Payment successful",
-				"Your order has been confirmed",
+				order.cookId._id,
+				"🆕 New Paid Order! 💰",
+				`${order.userId?.fullName || "Customer"} just completed payment of ₦${order.totalAmount.toFixed(2)}. Ready to cook! 🍳`,
+				{
+					type: "new_paid_order",
+					orderId: order._id.toString(),
+					amount: order.totalAmount.toString(),
+				},
 			);
-		}
 
-		// ✅ Admin notification (safe version)
-		if (typeof createAdminNotification === "function") {
 			await createAdminNotification({
-				title: "Payment Received",
-				body: `₦${order.totalAmount.toFixed(
-					2,
-				)} payment received for order ${order._id}`,
+				title: "💰 New Paid Order",
+				body: `Order #${order._id.toString().slice(-6)}: ₦${order.totalAmount.toFixed(2)} payment completed by ${order.userId?.fullName || "Customer"}`,
 				type: "order",
 				data: { orderId: order._id },
 			});
+		}
+
+		// 2. Send notification to USER about successful payment
+		if (order.userId) {
+			await sendPushToUser(
+				order.userId._id,
+				"✅ Payment Successful! 🎉",
+				`Your payment of ₦${order.totalAmount.toFixed(2)} has been confirmed. The cook will start preparing your order soon!`,
+				{
+					type: "payment_success",
+					orderId: order._id.toString(),
+					amount: order.totalAmount.toString(),
+				},
+			);
+		}
+
+		// ✅ Emit realtime update (if you use sockets)
+		if (typeof emitOrderUpdate === "function") {
+			emitOrderUpdate(order);
 		}
 
 		return res.status(200).json({
