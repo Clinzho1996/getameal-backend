@@ -227,37 +227,45 @@ export const signupComplete = async (req, res) => {
 			});
 		}
 
-		// Check if user already exists (for social auth users)
+		// Check if user already exists
 		const existingUser = await User.findOne({ email });
 
 		if (existingUser) {
-			// If user exists and is already verified (social auth user)
-			if (existingUser.isVerified && existingUser.provider) {
-				const token = generateToken(existingUser._id);
+			// For social auth users - update their profile instead of logging in
+			if (existingUser.provider && existingUser.provider !== "email") {
+				// Update missing fields
+				let needsUpdate = false;
 
-				// Update name and phone if provided and not already set
 				if (name && !existingUser.fullName) {
 					existingUser.fullName = name;
-				}
-				if (phone && !existingUser.phone) {
-					existingUser.phone = phone;
+					needsUpdate = true;
 				}
 
-				if (existingUser.isModified()) {
+				if (phone && !existingUser.phone) {
+					existingUser.phone = phone;
+					needsUpdate = true;
+				}
+
+				if (needsUpdate) {
 					await existingUser.save();
 				}
 
+				const token = generateToken(existingUser._id);
+
 				return res.status(200).json({
-					message: "Login successful",
+					message: "Profile updated successfully",
 					token,
 					user: existingUser,
+					isProfileComplete: true,
 				});
 			}
 
-			// If user exists but not verified (shouldn't happen)
-			return res.status(409).json({
-				message: "Account already exists. Please login instead.",
-			});
+			// For email signup users - account already exists
+			if (existingUser.provider === "email") {
+				return res.status(409).json({
+					message: "Account already exists. Please login instead.",
+				});
+			}
 		}
 
 		// For normal email signup: Check OTP verification
@@ -276,14 +284,14 @@ export const signupComplete = async (req, res) => {
 		const userExists = await User.findOne({ email });
 		if (userExists) {
 			return res.status(409).json({
-				message: "Account already exists",
+				message: "Account already exists. Please login instead.",
 			});
 		}
 
 		// Create new user for email signup
 		const user = await User.create({
 			fullName: name,
-			email,
+			email: email.toLowerCase().trim(),
 			phone: phone || "",
 			isVerified: true,
 			provider: "email",
