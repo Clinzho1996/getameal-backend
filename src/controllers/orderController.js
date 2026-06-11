@@ -457,6 +457,7 @@ export const updateOrder = async (req, res) => {
 		}
 
 		const { status, ...otherUpdates } = req.body;
+		let oldStatus = order.status; // Store old status before any changes
 
 		// Allow cooks to update status
 		if (isCook && status) {
@@ -492,8 +493,6 @@ export const updateOrder = async (req, res) => {
 					message: `Cannot transition from ${order.status} to ${status}. Allowed: ${allowedNextStatuses.join(", ")}`,
 				});
 			}
-
-			const oldStatus = order.status;
 
 			// Don't update if status is the same
 			if (oldStatus === status) {
@@ -566,19 +565,37 @@ export const updateOrder = async (req, res) => {
 			}
 
 			// If cook sets status to out_for_delivery, generate OTP for delivery verification
-			if (status === "out_for_delivery" && !order.otpCode) {
-				const otp = Math.floor(1000 + Math.random() * 9000).toString();
-				order.otpCode = otp;
-				order.otpExpires = Date.now() + 10 * 60 * 1000; // 10 mins
+			// FIXED: Use deliveryOtp instead of otpCode
+			if (status === "out_for_delivery" && !order.deliveryOtp) {
+				const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+				order.deliveryOtp = otp;
+				order.otpGeneratedAt = new Date();
+				// No expiry date - valid until order is delivered
 
-				// Send OTP via email
-				await sendDeliveryOTPEmail(order.userId.email, otp);
+				// Send OTP via email using the delivery OTP function
+				if (order.userId && order.userId.email) {
+					try {
+						await sendDeliveryOTPEmail(
+							order.userId.email,
+							otp,
+							order._id.toString(),
+							order.totalAmount,
+							order.deliveryType,
+						);
+						console.log(`✅ Delivery OTP email sent to ${order.userId.email}`);
+					} catch (emailError) {
+						console.error(
+							`❌ Failed to send delivery OTP email:`,
+							emailError.message,
+						);
+					}
+				}
 
 				// Send push notification about OTP
 				await sendPushToUser(
 					order.userId._id,
 					"Delivery OTP Generated 📱",
-					`Your delivery OTP is: ${otp}. Share this with your delivery person to verify delivery.`,
+					`Your delivery OTP for order #${order._id.toString().slice(-6)} is: ${otp}. Share this with your delivery person to verify delivery.`,
 					{
 						type: "delivery_otp",
 						orderId: order._id.toString(),
@@ -589,10 +606,10 @@ export const updateOrder = async (req, res) => {
 				console.log(`✅ OTP ${otp} generated for order ${order._id}`);
 			}
 
-			// If order is delivered or picked up, mark as complete
+			// If order is delivered or picked up, clear OTP
 			if (status === "delivered" || status === "picked_up") {
-				order.paymentStatus = "paid";
-				// You could also release payment to cook here
+				order.deliveryOtp = null;
+				order.otpGeneratedAt = null;
 			}
 		}
 
@@ -601,23 +618,23 @@ export const updateOrder = async (req, res) => {
 			order.note = otherUpdates.note;
 		}
 
-		// Create admin notification for audit trail
+		// Apply other updates for owner or cook
+		Object.assign(order, otherUpdates);
+		await order.save();
+
+		// Create admin notification for audit trail (FIXED: use oldStatus variable)
 		await createAdminNotification({
 			title: "Order Status Updated",
 			body: `Order #${order._id.toString().slice(-6)} status was updated from ${oldStatus || order.status} to ${order.status} by ${req.user.fullName}`,
 			type: "order",
 			data: {
 				orderId: order._id,
-				userId: order.userId._id,
-				cookId: order.cookId._id,
-				oldStatus: oldStatus,
+				userId: order.userId?._id,
+				cookId: order.cookId?._id,
+				oldStatus: oldStatus || order.status,
 				newStatus: order.status,
 			},
 		});
-
-		// Apply other updates for owner or cook
-		Object.assign(order, otherUpdates);
-		await order.save();
 
 		// Populate additional data for response
 		const updatedOrder = await Order.findById(order._id)
