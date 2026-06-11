@@ -1,5 +1,6 @@
 import axios from "axios";
 import City from "../models/City.js";
+import CookProfile from "../models/CookProfile.js";
 import User from "../models/User.js";
 import { getCityCoordinates } from "../utils/geoCode.js";
 
@@ -165,7 +166,7 @@ export const getNearbyCooks = async (req, res) => {
 		const searchRadius = radius ? parseInt(radius) : 5000;
 
 		// ===== 1. NEARBY =====
-		let cooks = await User.find({
+		let users = await User.find({
 			isCook: true,
 			location: {
 				$near: {
@@ -183,33 +184,72 @@ export const getNearbyCooks = async (req, res) => {
 		const userRegion = req.query.region;
 
 		// ===== 2. REGION FALLBACK =====
-		if (cooks.length === 0 && userRegion) {
-			cooks = await User.find({
+		if (users.length === 0 && userRegion) {
+			users = await User.find({
 				isCook: true,
 				"location.region": userRegion.toLowerCase(),
 			}).select("-walletBalance -payoutBank");
 		}
 
 		// ===== 3. STATE FALLBACK =====
-		if (cooks.length === 0 && userState) {
-			cooks = await User.find({
+		if (users.length === 0 && userState) {
+			users = await User.find({
 				isCook: true,
 				"location.state": userState,
 			}).select("-walletBalance -payoutBank");
 		}
 
 		// ===== 4. LAST RESORT =====
-		if (cooks.length === 0) {
-			cooks = await User.find({ isCook: true })
+		if (users.length === 0) {
+			users = await User.find({ isCook: true })
 				.limit(20)
 				.select("-walletBalance -payoutBank");
 		}
 
+		// ===== 5. ENRICH WITH COOK PROFILE DATA =====
+		const cooksWithProfiles = await Promise.all(
+			users.map(async (user) => {
+				const userObj = user.toObject();
+
+				// Get cook profile
+				const cookProfile = await CookProfile.findOne({
+					userId: user._id,
+				}).select(
+					"cookDisplayName cookAddress location profilePhoto coverPhoto bio rating isApproved isAvailable",
+				);
+
+				if (cookProfile) {
+					// Add cook profile data to user object
+					userObj.cookDisplayName =
+						cookProfile.cookDisplayName || user.fullName;
+					userObj.cookAddress = cookProfile.cookAddress;
+					userObj.cookLocation = cookProfile.location;
+					userObj.cookProfilePhoto =
+						cookProfile.profilePhoto || user.profileImage;
+					userObj.cookCoverPhoto = cookProfile.coverPhoto;
+					userObj.cookBio = cookProfile.bio;
+					userObj.cookRating = cookProfile.rating;
+					userObj.isApproved = cookProfile.isApproved;
+					userObj.isAvailable = cookProfile.isAvailable;
+				} else {
+					// Fallback to user data if no cook profile
+					userObj.cookDisplayName = user.fullName;
+					userObj.cookAddress = user.cookAddress;
+					userObj.cookRating = 0;
+					userObj.isApproved = false;
+					userObj.isAvailable = false;
+				}
+
+				return userObj;
+			}),
+		);
+
 		res.json({
-			count: cooks.length,
-			cooks,
+			count: cooksWithProfiles.length,
+			cooks: cooksWithProfiles,
 		});
 	} catch (error) {
+		console.error("Error in getNearbyCooks:", error);
 		res.status(500).json({
 			message: "Failed to fetch cooks",
 			error: error.message,

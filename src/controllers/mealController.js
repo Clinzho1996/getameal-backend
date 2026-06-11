@@ -99,12 +99,62 @@ export const getMealsByCook = async (req, res) => {
 
 		if (!cook) return res.status(404).json({ message: "Cook not found" });
 
-		const meals = await Meal.find({ cookId: cook._id })
+		// Get cook profile for additional info
+		const cookProfile = await CookProfile.findOne({ userId: cook._id }).select(
+			"cookDisplayName cookAddress location profilePhoto coverPhoto bio rating isApproved isAvailable",
+		);
+
+		let meals = await Meal.find({ cookId: cook._id })
 			.sort({ createdAt: -1 })
 			.populate("cookId", "fullName profileImage location");
 
-		res.json(meals);
+		// Enrich meals with cook profile data
+		meals = meals.map((meal) => {
+			const mealObj = meal.toObject();
+
+			// Add cook profile information to each meal
+			mealObj.cookDetails = {
+				_id: cook._id,
+				fullName: cook.fullName,
+				email: cook.email,
+				phone: cook.phone,
+				profileImage: cook.profileImage,
+				location: cook.location,
+				// Cook profile fields
+				cookDisplayName: cookProfile?.cookDisplayName || cook.fullName,
+				cookAddress: cookProfile?.cookAddress,
+				cookLocation: cookProfile?.location,
+				cookProfilePhoto: cookProfile?.profilePhoto || cook.profileImage,
+				cookCoverPhoto: cookProfile?.coverPhoto,
+				cookBio: cookProfile?.bio,
+				cookRating: cookProfile?.rating || 0,
+				isApproved: cookProfile?.isApproved || false,
+				isAvailable: cookProfile?.isAvailable || false,
+			};
+
+			return mealObj;
+		});
+
+		res.json({
+			success: true,
+			count: meals.length,
+			cook: {
+				_id: cook._id,
+				fullName: cook.fullName,
+				email: cook.email,
+				phone: cook.phone,
+				profileImage: cook.profileImage,
+				location: cook.location,
+				cookDisplayName: cookProfile?.cookDisplayName || cook.fullName,
+				cookAddress: cookProfile?.cookAddress,
+				cookRating: cookProfile?.rating || 0,
+				isApproved: cookProfile?.isApproved || false,
+				isAvailable: cookProfile?.isAvailable || false,
+			},
+			meals: meals,
+		});
 	} catch (error) {
+		console.error("Error in getMealsByCook:", error);
 		res.status(500).json({ message: error.message });
 	}
 };
