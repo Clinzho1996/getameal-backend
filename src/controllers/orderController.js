@@ -141,10 +141,15 @@ export const createOrder = async (req, res) => {
 			deliveryType: createdOrder.deliveryType,
 			status: createdOrder.status,
 			paymentStatus: createdOrder.paymentStatus,
-			paymentReference: createdOrder.paymentReference, // ✅ Include payment reference
+			paymentReference: createdOrder.paymentReference,
 			note: createdOrder.note,
 			createdAt: createdOrder.createdAt,
 		};
+
+		// ✅ Add delivery address to response if it exists
+		if (createdOrder.deliveryAddress) {
+			responseOrder.deliveryAddress = createdOrder.deliveryAddress;
+		}
 
 		// Add region to response if delivery
 		if (deliveryType === "delivery") {
@@ -171,7 +176,7 @@ export const createOrder = async (req, res) => {
 				success: true,
 				order: responseOrder,
 				paymentUrl: paystack.data.data.authorization_url,
-				paymentReference: paymentReference, // ✅ Also include at root level
+				paymentReference: paymentReference,
 				message: "Complete payment to confirm your order",
 			});
 		}
@@ -211,7 +216,7 @@ export const createOrder = async (req, res) => {
 				paymentLinkCode,
 				deepLink: `getameal://payment-friend/pay/${paymentLinkCode}`,
 				paystackUrl: paystackRes.data.data.authorization_url,
-				paymentReference: paymentReference, // ✅ Include payment reference
+				paymentReference: paymentReference,
 				message: "Share payment link with friend to complete payment",
 			});
 		}
@@ -219,7 +224,7 @@ export const createOrder = async (req, res) => {
 		res.json({
 			success: true,
 			order: responseOrder,
-			paymentReference: paymentReference, // ✅ Include payment reference for non-payment orders
+			paymentReference: paymentReference,
 			message: "Order created successfully",
 		});
 	} catch (error) {
@@ -758,11 +763,20 @@ export const getOrderById = async (req, res) => {
 			});
 		}
 
-		// Only owner or cook can view
-		const isOwner = order.userId._id.toString() === req.user._id.toString();
-		const isCook = order.cookId._id.toString() === req.user._id.toString();
+		// ✅ Check if userId or cookId is null (deleted users)
+		const userId = order.userId?._id || order.userId;
+		const cookId = order.cookId?._id || order.cookId;
 
-		if (!isOwner && !isCook) {
+		// If user or cook doesn't exist, still allow access but with limited info
+		const userExists = userId && userId.toString() !== "null";
+		const cookExists = cookId && cookId.toString() !== "null";
+
+		// Only owner or cook can view (but check if they exist)
+		const isOwner = userExists && userId.toString() === req.user._id.toString();
+		const isCook = cookExists && cookId.toString() === req.user._id.toString();
+		const isAdmin = req.user.role === "admin";
+
+		if (!isOwner && !isCook && !isAdmin) {
 			return res.status(403).json({
 				message: "Not authorized",
 			});
@@ -771,8 +785,35 @@ export const getOrderById = async (req, res) => {
 		// ✅ Add cook profile with kitchen address
 		const orderObj = order.toObject();
 
-		// 🆕 Include OTP for the order owner
-		if (isOwner) {
+		// ✅ Include delivery address in response
+		if (order.deliveryAddress) {
+			orderObj.deliveryAddress = order.deliveryAddress;
+		}
+
+		// Handle missing user data
+		if (!order.userId) {
+			orderObj.userId = {
+				_id: null,
+				fullName: "Deleted User",
+				email: "No email available",
+				phone: "No phone available",
+				profileImage: null,
+			};
+		}
+
+		// Handle missing cook data
+		if (!order.cookId) {
+			orderObj.cookId = {
+				_id: null,
+				fullName: "Deleted Cook",
+				email: "No email available",
+				phone: "No phone available",
+				profileImage: null,
+			};
+		}
+
+		// 🆕 Include OTP for the order owner (only if user exists)
+		if (isOwner && userExists) {
 			if (order.paymentStatus === "paid" && order.deliveryOtp) {
 				orderObj.deliveryOtp = order.deliveryOtp;
 				orderObj.otpGeneratedAt = order.otpGeneratedAt;
@@ -798,30 +839,41 @@ export const getOrderById = async (req, res) => {
 			}
 		}
 
-		// For cooks, show OTP info but not the code
-		if (isCook && order.deliveryOtp && order.paymentStatus === "paid") {
+		// For cooks, show OTP info but not the code (only if cook exists)
+		if (
+			isCook &&
+			cookExists &&
+			order.deliveryOtp &&
+			order.paymentStatus === "paid"
+		) {
 			orderObj.hasOtp = true;
 			orderObj.otpStatus =
 				order.status === "delivered" || order.status === "picked_up"
 					? "used"
 					: "active";
-			orderObj.otpMessage = isCook
-				? "Ask the customer for their OTP to verify delivery"
-				: null;
+			orderObj.otpMessage = "Ask the customer for their OTP to verify delivery";
 		}
 
-		const cookProfile = await CookProfile.findOne({
-			userId: order.cookId._id,
-		}).select(
-			"cookAddress location cookDisplayName profilePhoto phone email isApproved rating",
-		);
+		// Try to get cook profile (only if cook exists)
+		let cookProfile = null;
+		if (cookExists && order.cookId && order.cookId._id) {
+			try {
+				cookProfile = await CookProfile.findOne({
+					userId: order.cookId._id,
+				}).select(
+					"cookAddress location cookDisplayName profilePhoto phone email isApproved rating",
+				);
+			} catch (profileError) {
+				console.error("Error fetching cook profile:", profileError);
+			}
+		}
 
 		orderObj.cookProfile = cookProfile || null;
 
 		// Add kitchen address to each meal item
 		if (orderObj.mealItems && orderObj.mealItems.length > 0) {
 			for (const item of orderObj.mealItems) {
-				if (item.mealId && item.mealId.cookId) {
+				if (item.mealId && item.mealId.cookId && cookProfile) {
 					item.kitchenAddress = cookProfile?.cookAddress || null;
 					item.kitchenLocation = cookProfile?.location || null;
 					item.cookDisplayName = cookProfile?.cookDisplayName || null;
