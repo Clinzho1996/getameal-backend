@@ -1029,7 +1029,7 @@ export const verifyDeliveryOTP = async (req, res) => {
 			});
 		}
 
-		// ✅ Check if OTP exists - FIXED: use deliveryOtp instead of otpCode
+		// ✅ Check if OTP exists
 		if (!order.deliveryOtp) {
 			return res.status(400).json({
 				message: "No OTP generated for this order. Please contact support.",
@@ -1037,7 +1037,7 @@ export const verifyDeliveryOTP = async (req, res) => {
 			});
 		}
 
-		// ✅ Verify OTP - FIXED: use deliveryOtp
+		// ✅ Verify OTP
 		if (order.deliveryOtp !== otp) {
 			return res
 				.status(400)
@@ -1046,6 +1046,7 @@ export const verifyDeliveryOTP = async (req, res) => {
 
 		// Store the used OTP for logging before clearing
 		const usedOtp = order.deliveryOtp;
+		const oldStatus = order.status;
 
 		// Mark order as completed based on delivery type
 		if (order.deliveryType === "delivery") {
@@ -1059,35 +1060,84 @@ export const verifyDeliveryOTP = async (req, res) => {
 		order.otpGeneratedAt = null;
 		await order.save();
 
-		// Rest of your code remains the same...
+		console.log(
+			`✅ Order ${order._id} status updated from ${oldStatus} to ${order.status}`,
+		);
+
+		// ---- CREDIT COOK WALLET AND DEDUCT COMMISSION ----
 		const cook = await User.findById(order.cookId);
-		const commissionRate = 0.1;
+		if (!cook) {
+			console.error(`❌ Cook not found for order ${order._id}`);
+			return res.status(404).json({ message: "Cook not found" });
+		}
+
+		const commissionRate = 0.1; // 10% commission
 		const commission = order.totalAmount * commissionRate;
 		const cookAmount = order.totalAmount - commission;
 
-		cook.walletBalance += cookAmount;
+		console.log(`💰 Processing payment for cook ${cook._id}`);
+		console.log(`   Order Amount: ₦${order.totalAmount}`);
+		console.log(`   Commission (10%): ₦${commission}`);
+		console.log(`   Cook Earnings: ₦${cookAmount}`);
+		console.log(`   Current Wallet Balance: ₦${cook.walletBalance || 0}`);
+
+		// Update cook's wallet balance in User model
+		const previousBalance = cook.walletBalance || 0;
+		cook.walletBalance = previousBalance + cookAmount;
 		await cook.save();
 
-		await WalletTransaction.create({
-			cookId: cook._id,
-			type: "credit",
-			amount: cookAmount,
-			reference: order._id.toString(),
-			description: `Payment for order #${order._id.toString().slice(-6)} (OTP: ${usedOtp})`,
-		});
+		console.log(
+			`✅ Cook wallet updated: ₦${previousBalance} → ₦${cook.walletBalance}`,
+		);
 
+		// ✅ Create wallet transaction using your schema (with cookId)
+		try {
+			const transaction = await WalletTransaction.create({
+				cookId: cook._id, // Using cookId as per your schema
+				type: "credit",
+				amount: cookAmount,
+				reference: order._id.toString(),
+				status: "success",
+			});
+			console.log(`✅ Wallet transaction created: ${transaction._id}`);
+		} catch (txError) {
+			console.error(`❌ Failed to create wallet transaction:`, txError.message);
+			// Don't fail the whole operation if transaction logging fails
+		}
+
+		// Also update CookProfile wallet balance if it exists (for consistency)
+		try {
+			const cookProfile = await CookProfile.findOne({ userId: order.cookId });
+			if (cookProfile) {
+				const previousProfileBalance = cookProfile.walletBalance || 0;
+				cookProfile.walletBalance = previousProfileBalance + cookAmount;
+				await cookProfile.save();
+				console.log(
+					`✅ CookProfile wallet updated: ₦${previousProfileBalance} → ₦${cookProfile.walletBalance}`,
+				);
+			}
+		} catch (profileError) {
+			console.error(
+				`❌ Failed to update CookProfile wallet:`,
+				profileError.message,
+			);
+		}
+
+		// ✅ Send push notification to cook
 		await sendPushToUser(
 			cook._id,
 			"✅ Order Completed & Payment Received! 💰",
-			`You earned ₦${cookAmount.toFixed(2)} from order #${order._id.toString().slice(-6)}. Commission: ₦${commission.toFixed(2)}`,
+			`You earned ₦${cookAmount.toFixed(2)} from order #${order._id.toString().slice(-6)}. Commission: ₦${commission.toFixed(2)}. New balance: ₦${cook.walletBalance.toFixed(2)}`,
 			{
 				type: "order_completed",
 				orderId: order._id.toString(),
 				amount: cookAmount.toString(),
 				commission: commission.toString(),
+				newBalance: cook.walletBalance.toString(),
 			},
 		);
 
+		// ✅ Send push notification to user
 		if (order.userId) {
 			await sendPushToUser(
 				order.userId._id,
@@ -1101,9 +1151,10 @@ export const verifyDeliveryOTP = async (req, res) => {
 			);
 		}
 
+		// Send admin notification
 		await createAdminNotification({
 			title: "Order Completed",
-			body: `Order #${order._id.toString().slice(-6)} completed. Cook earned ₦${cookAmount.toFixed(2)}. OTP ${usedOtp} used for verification.`,
+			body: `Order #${order._id.toString().slice(-6)} completed. Cook earned ₦${cookAmount.toFixed(2)}. Commission: ₦${commission.toFixed(2)}. OTP ${usedOtp} used.`,
 			type: "order",
 			data: {
 				orderId: order._id,
@@ -1125,6 +1176,12 @@ export const verifyDeliveryOTP = async (req, res) => {
 				totalAmount: order.totalAmount,
 			},
 			cookWalletBalance: cook.walletBalance,
+			earnings: {
+				amount: cookAmount,
+				commission: commission,
+				previousBalance: previousBalance,
+				newBalance: cook.walletBalance,
+			},
 			verificationDetails: {
 				verifiedBy: req.user.fullName,
 				verifiedAt: new Date().toISOString(),
@@ -1133,7 +1190,11 @@ export const verifyDeliveryOTP = async (req, res) => {
 		});
 	} catch (error) {
 		console.error("Error in verifyDeliveryOTP:", error);
-		res.status(500).json({ message: error.message });
+		res.status(500).json({
+			success: false,
+			message: error.message,
+			stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+		});
 	}
 };
 
