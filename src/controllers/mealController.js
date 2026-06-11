@@ -483,7 +483,7 @@ export const getMealsByDateForCook = async (req, res) => {
 
 export const updateMealStatus = async (req, res) => {
 	try {
-		const { status } = req.body; // "cooking" or "ready" or "closed"
+		const { status } = req.body; // "cooking" or "ready" or "closed" or "open"
 		const { id } = req.params;
 
 		if (!["cooking", "ready", "closed", "open"].includes(status)) {
@@ -505,7 +505,9 @@ export const updateMealStatus = async (req, res) => {
 		// ✅ MAP MEAL STATUS TO ORDER STATUS BASED ON YOUR FLOW
 		let orderStatus = "";
 		let notificationMessage = "";
+		let shouldUpdateOrders = true;
 
+		// Define status transitions
 		if (status === "cooking") {
 			orderStatus = "cooking";
 			notificationMessage = "The cook has started preparing your meal!";
@@ -516,45 +518,65 @@ export const updateMealStatus = async (req, res) => {
 		} else if (status === "closed") {
 			orderStatus = "cancelled";
 			notificationMessage = "Your meal order has been cancelled.";
+		} else if (status === "open") {
+			// When going back to open from cooking/ready, revert orders to confirmed
+			if (oldStatus === "cooking" || oldStatus === "ready") {
+				orderStatus = "confirmed";
+				notificationMessage = "The cook has reopened this meal for orders.";
+			} else {
+				shouldUpdateOrders = false;
+			}
 		}
 
-		if (orderStatus) {
+		if (shouldUpdateOrders && orderStatus) {
 			// Find all orders containing this meal
 			const orders = await Order.find({
 				"mealItems.mealId": id,
 				status: { $nin: ["delivered", "picked_up", "cancelled"] }, // Only update active orders
-			});
+			}).populate("userId", "fullName email");
 
 			let updatedOrders = 0;
 
 			for (const order of orders) {
 				const oldOrderStatus = order.status;
-				order.status = orderStatus;
 
-				// If meal is ready, also update individual meal items if needed
-				if (status === "ready") {
-					// You could also update something here if needed
+				// Only update if the status change makes sense
+				const shouldUpdate =
+					(orderStatus === "cooking" && oldOrderStatus === "confirmed") ||
+					(orderStatus === "ready" && oldOrderStatus === "cooking") ||
+					(orderStatus === "confirmed" &&
+						(oldOrderStatus === "cooking" || oldOrderStatus === "ready")) ||
+					orderStatus === "cancelled";
+
+				if (shouldUpdate) {
+					order.status = orderStatus;
+					await order.save();
+					updatedOrders++;
+
+					// Send push notification to customer about order status update
+					if (order.userId && order.userId._id) {
+						await sendPushToUser(
+							order.userId._id,
+							`Order ${orderStatus.charAt(0).toUpperCase() + orderStatus.slice(1)}`,
+							`${notificationMessage} Order #${order._id.toString().slice(-6)}`,
+							{
+								orderId: order._id,
+								status: orderStatus,
+								mealId: meal._id,
+								mealName: meal.name,
+								oldStatus: oldOrderStatus,
+							},
+						);
+					}
+
+					console.log(
+						`✅ Order ${order._id} updated from ${oldOrderStatus} to ${orderStatus}`,
+					);
+				} else {
+					console.log(
+						`⏭️ Order ${order._id} not updated (${oldOrderStatus} -> ${orderStatus} not allowed)`,
+					);
 				}
-
-				await order.save();
-				updatedOrders++;
-
-				// Send push notification to customer about order status update
-				await sendPushToUser(
-					order.userId,
-					`Order ${orderStatus.charAt(0).toUpperCase() + orderStatus.slice(1)}`,
-					`${notificationMessage} Order #${order._id.toString().slice(-6)}`,
-					{
-						orderId: order._id,
-						status: orderStatus,
-						mealId: meal._id,
-						mealName: meal.name,
-					},
-				);
-
-				console.log(
-					`✅ Order ${order._id} updated from ${oldOrderStatus} to ${orderStatus}`,
-				);
 			}
 
 			console.log(
@@ -569,19 +591,33 @@ export const updateMealStatus = async (req, res) => {
 			data: { mealId: meal._id, status, oldStatus },
 		});
 
+		// Send notification to cook
 		await sendPushToUser(
 			req.user._id,
 			"Meal Status Updated",
 			`Your meal "${meal.name}" status was updated from "${oldStatus}" to "${status}"`,
+			{
+				mealId: meal._id,
+				mealName: meal.name,
+				oldStatus: oldStatus,
+				newStatus: status,
+			},
 		);
 
 		res.json({
+			success: true,
 			message: "Meal status updated",
-			meal,
+			meal: {
+				_id: meal._id,
+				name: meal.name,
+				status: meal.status,
+				oldStatus: oldStatus,
+			},
 			orderStatusUpdated: orderStatus ? true : false,
 			statusFlow: {
 				mealStatus: status,
 				orderStatus: orderStatus || "No change",
+				ordersUpdated: orderStatus ? true : false,
 			},
 		});
 	} catch (error) {

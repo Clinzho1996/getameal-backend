@@ -1127,7 +1127,7 @@ export const verifyDeliveryOTP = async (req, res) => {
 		await sendPushToUser(
 			cook._id,
 			"✅ Order Completed & Payment Received! 💰",
-			`You earned ₦${cookAmount.toFixed(2)} from order #${order._id.toString().slice(-6)}. Commission: ₦${commission.toFixed(2)}. New balance: ₦${cook.walletBalance.toFixed(2)}`,
+			`You earned ₦${cookAmount.toFixed(2)} from order #${order._id.toString().slice(-6)}. New balance: ₦${cook.walletBalance.toFixed(2)}`,
 			{
 				type: "order_completed",
 				orderId: order._id.toString(),
