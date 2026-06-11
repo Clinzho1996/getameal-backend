@@ -5,7 +5,7 @@ import WalletTransaction from "../models/WalletTransaction.js";
 import { sendNotification } from "../services/notificationService.js";
 import { sendPushToUser } from "../services/pushService.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
-import { sendOTPEmail } from "../utils/emailService.js";
+import { sendDeliveryOTPEmail } from "../utils/emailService.js";
 
 // Handle successful payment
 export const handleSuccessfulPayment = async (data) => {
@@ -77,7 +77,7 @@ export const handleSuccessfulPayment = async (data) => {
 					<small>Thank you for choosing GetAMeal!</small>
 				`;
 
-				await sendOTPEmail(user.email, deliveryOtp, emailHtml);
+				await sendDeliveryOTPEmail(user.email, deliveryOtp, emailHtml);
 				console.log(`✅ OTP email sent to ${user.email}`);
 			}
 		} catch (emailError) {

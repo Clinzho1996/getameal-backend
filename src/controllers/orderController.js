@@ -5,7 +5,7 @@ import Meal from "../models/Meal.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
-import { sendOTPEmail } from "../utils/emailService.js";
+import { sendDeliveryOTPEmail } from "../utils/emailService.js";
 import { emitOrderUpdate } from "../utils/Notification.js";
 
 import crypto from "crypto";
@@ -361,21 +361,24 @@ export const handlePaymentCallback = async (req, res) => {
 
 		console.log(`✅ Order ${order._id} saved with OTP: ${order.deliveryOtp}`);
 
-		// Only send notifications for newly processed orders
 		if (isNewlyProcessed || needsOtpRegeneration) {
-			// 📧 Send OTP to user via email
+			// 📧 Send OTP to user via email - Fix: Pass correct parameters
 			if (order.userId && order.userId.email) {
-				const emailHtml = `
-					<h2>Order Confirmed! 🎉</h2>
-					<p>Your order #${order._id.toString().slice(-6)} has been confirmed.</p>
-					<p><strong>Your Delivery OTP is: ${deliveryOtp}</strong></p>
-					<p>⚠️ Keep this OTP safe. You'll need to share it with the cook/delivery person when you receive your order.</p>
-					<p>This OTP does not expire and is valid until your order is delivered.</p>
-					<small>Order ID: ${order._id}</small>
-				`;
-
-				await sendOTPEmail(order.userId.email, deliveryOtp, emailHtml);
-				console.log(`✅ OTP email sent to ${order.userId.email}`);
+				try {
+					await sendDeliveryOTPEmail(
+						order.userId.email,
+						deliveryOtp,
+						order._id.toString(),
+						order.totalAmount,
+						order.deliveryType,
+					);
+					console.log(`✅ Delivery OTP email sent to ${order.userId.email}`);
+				} catch (emailError) {
+					console.error(
+						`❌ Failed to send delivery OTP email:`,
+						emailError.message,
+					);
+				}
 			}
 
 			// 📱 Send push notification to user
@@ -565,7 +568,7 @@ export const updateOrder = async (req, res) => {
 				order.otpExpires = Date.now() + 10 * 60 * 1000; // 10 mins
 
 				// Send OTP via email
-				await sendOTPEmail(order.userId.email, otp);
+				await sendDeliveryOTPEmail(order.userId.email, otp);
 
 				// Send push notification about OTP
 				await sendPushToUser(
@@ -899,6 +902,7 @@ export const updatePaymentStatus = async (req, res) => {
 
 // Send OTP when order is out for delivery
 
+// Send OTP when order is out for delivery
 export const sendDeliveryOTP = async (req, res) => {
 	try {
 		const order = await Order.findById(req.params.id).populate("userId");
@@ -921,12 +925,22 @@ export const sendDeliveryOTP = async (req, res) => {
 
 		await order.save();
 
-		await sendOTPEmail(order.userId.email, otp);
+		// Fix: Pass all required parameters
+		await sendDeliveryOTPEmail(
+			order.userId.email,
+			otp,
+			order._id.toString(),
+			order.totalAmount,
+			order.deliveryType,
+		);
 
 		res.json({
+			success: true,
 			message: "Delivery OTP sent",
+			otp: otp,
 		});
 	} catch (error) {
+		console.error("Error sending delivery OTP:", error);
 		res.status(500).json({
 			message: error.message,
 		});
