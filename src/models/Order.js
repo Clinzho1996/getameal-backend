@@ -62,7 +62,14 @@ const orderSchema = new mongoose.Schema(
 
 		selectedRegion: {
 			type: String,
-			enum: ["Mainland", "Island"],
+			enum: [
+				"Mainland",
+				"Island",
+				"All Mainland Areas",
+				"Lekki",
+				"Ikeja",
+				"Victoria Island",
+			],
 			default: null,
 		},
 
