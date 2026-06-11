@@ -398,12 +398,11 @@ export const handlePaymentCallback = async (req, res) => {
 				await sendPushToUser(
 					order.cookId._id,
 					"🆕 New Paid Order! 💰",
-					`${order.userId?.fullName || "Customer"} placed an order for ₦${order.totalAmount.toFixed(2)}. Customer OTP: ${deliveryOtp}`,
+					`${order.userId?.fullName || "Customer"} placed an order for ₦${order.totalAmount.toFixed(2)}. Check it out!`,
 					{
 						type: "new_paid_order",
 						orderId: order._id.toString(),
 						amount: order.totalAmount.toString(),
-						otp: deliveryOtp,
 					},
 				);
 			}
