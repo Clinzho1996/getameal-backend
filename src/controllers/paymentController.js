@@ -4,6 +4,8 @@ import User from "../models/User.js";
 import WalletTransaction from "../models/WalletTransaction.js";
 import { sendNotification } from "../services/notificationService.js";
 import { sendPushToUser } from "../services/pushService.js";
+import { createAdminNotification } from "../utils/adminNotification.js";
+import { sendOTPEmail } from "../utils/emailService.js";
 
 // Handle successful payment
 export const handleSuccessfulPayment = async (data) => {
@@ -39,27 +41,62 @@ export const handleSuccessfulPayment = async (data) => {
 			return;
 		}
 
-		// ✅ Update order
+		// 🆕 GENERATE DELIVERY OTP (6-digit, NO EXPIRY)
+		const deliveryOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+		console.log(`🔐 Generating OTP ${deliveryOtp} for order ${order._id}`);
+
+		// ✅ Update order with OTP
 		order.paymentStatus = "paid";
 		order.status = "confirmed";
 		order.paymentReference = data.reference;
+		order.deliveryOtp = deliveryOtp; // Set the OTP
+		order.otpGeneratedAt = new Date(); // Set generation time
+
 		await order.save();
 
+		console.log(`✅ Order updated with OTP: ${order.deliveryOtp}`);
+		console.log(`✅ OTP Generated At: ${order.otpGeneratedAt}`);
 		console.log(`✅ Payment applied via webhook: ${order._id}`);
-		console.log(`👤 Customer ID: ${order.userId}`); // ✅ Use userId instead of customerId
+		console.log(`👤 Customer ID: ${order.userId}`);
+
+		// 📧 Send OTP to user via email
+		try {
+			const user = await User.findById(order.userId);
+			if (user && user.email) {
+				const emailHtml = `
+					<h2>Order Confirmed! 🎉</h2>
+					<p>Your order #${order._id.toString().slice(-6)} has been confirmed.</p>
+					<p><strong>Your Delivery OTP is: ${deliveryOtp}</strong></p>
+					<p>⚠️ Keep this OTP safe. You'll need to share it with the cook/delivery person when you receive your order.</p>
+					<p>This OTP does not expire and is valid until your order is delivered.</p>
+					<h3>Order Summary:</h3>
+					<p><strong>Total Amount:</strong> ₦${order.totalAmount.toFixed(2)}</p>
+					<p><strong>Delivery Type:</strong> ${order.deliveryType}</p>
+					<p><strong>Order ID:</strong> ${order._id}</p>
+					<small>Thank you for choosing GetAMeal!</small>
+				`;
+
+				await sendOTPEmail(user.email, deliveryOtp, emailHtml);
+				console.log(`✅ OTP email sent to ${user.email}`);
+			}
+		} catch (emailError) {
+			console.error(`❌ Failed to send OTP email:`, emailError.message);
+		}
 
 		// ✅ SEND PUSH NOTIFICATION AFTER ORDER IS SAVED
 		try {
 			console.log(`📱 Attempting to send push to customer: ${order.userId}`);
 
 			const pushResult = await sendPushToUser(
-				order.userId, // ✅ CHANGE THIS: Use userId instead of customerId
-				"Payment Successful",
-				`Your payment for order ${order._id} was successful!`,
+				order.userId,
+				"🎫 Payment Successful - Your Delivery OTP",
+				`Your payment of ₦${order.totalAmount.toFixed(2)} is confirmed! Your delivery OTP is: ${deliveryOtp}. Keep it safe!`,
 				{
 					orderId: order._id.toString(),
 					amount: order.totalAmount,
 					type: "payment_success",
+					otp: deliveryOtp,
 				},
 			);
 
@@ -81,11 +118,15 @@ export const handleSuccessfulPayment = async (data) => {
 
 			// Also create in-app notification
 			await sendNotification({
-				userId: order.userId, // ✅ Use userId here too
-				title: "Payment Successful",
-				body: `Your payment for order ${order._id} was successful!`,
+				userId: order.userId,
+				title: "Payment Successful - Order Confirmed",
+				body: `Your payment of ₦${order.totalAmount.toFixed(2)} is confirmed! Your delivery OTP is: ${deliveryOtp}`,
 				type: "payment_success",
-				data: { orderId: order._id.toString(), amount: order.totalAmount },
+				data: {
+					orderId: order._id.toString(),
+					amount: order.totalAmount,
+					otp: deliveryOtp,
+				},
 			});
 		} catch (pushError) {
 			// Don't let push failure break the payment flow
@@ -96,7 +137,44 @@ export const handleSuccessfulPayment = async (data) => {
 			console.error("Push error details:", pushError);
 		}
 
-		return { success: true, order };
+		// Send notification to COOK with OTP
+		try {
+			const cook = await User.findById(order.cookId);
+			if (cook) {
+				await sendPushToUser(
+					order.cookId,
+					"🆕 New Paid Order! 💰",
+					`New order #${order._id.toString().slice(-6)} for ₦${order.totalAmount.toFixed(2)}. Customer OTP: ${deliveryOtp}`,
+					{
+						type: "new_paid_order",
+						orderId: order._id.toString(),
+						amount: order.totalAmount.toString(),
+						otp: deliveryOtp,
+					},
+				);
+				console.log(`✅ Push notification sent to cook for order ${order._id}`);
+			}
+		} catch (cookPushError) {
+			console.error(`❌ Failed to send push to cook:`, cookPushError.message);
+		}
+
+		// Send admin notification
+		try {
+			await createAdminNotification({
+				title: "💰 New Paid Order",
+				body: `Order #${order._id.toString().slice(-6)}: ₦${order.totalAmount.toFixed(2)} payment completed. OTP: ${deliveryOtp}`,
+				type: "order",
+				data: { orderId: order._id, otp: deliveryOtp },
+			});
+			console.log(`✅ Admin notification sent for order ${order._id}`);
+		} catch (adminError) {
+			console.error(
+				`❌ Failed to send admin notification:`,
+				adminError.message,
+			);
+		}
+
+		return { success: true, order, otp: deliveryOtp };
 	} catch (error) {
 		console.error("Webhook processing error:", error.message);
 		console.error("Full error:", error);
@@ -115,6 +193,8 @@ export const handleRefund = async (data) => {
 
 		order.paymentStatus = "refunded";
 		order.status = "cancelled";
+		order.deliveryOtp = null; // Clear OTP on refund
+		order.otpGeneratedAt = null;
 		await order.save();
 
 		// Update cook's wallet
@@ -124,7 +204,7 @@ export const handleRefund = async (data) => {
 			await cook.save();
 
 			await WalletTransaction.create({
-				userId: cook._id, // Make sure this matches your schema
+				userId: cook._id,
 				type: "debit",
 				amount: order.totalAmount,
 				reason: `Refund for order ${order._id}`,
@@ -137,7 +217,7 @@ export const handleRefund = async (data) => {
 		// Send push notification to customer
 		try {
 			await sendPushToUser(
-				order.userId, // ✅ Use userId
+				order.userId,
 				"Payment Refunded",
 				`Your payment for order ${order._id} has been refunded.`,
 				{ orderId: order._id.toString() },

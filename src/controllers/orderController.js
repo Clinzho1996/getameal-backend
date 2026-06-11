@@ -18,14 +18,31 @@ export const createOrder = async (req, res) => {
 	session.startTransaction();
 
 	try {
-		const { items, deliveryType, paymentType, note } = req.body;
+		const {
+			items,
+			deliveryType,
+			paymentType,
+			note,
+			deliveryAddress,
+			deliveryRegion,
+			selectedRegion,
+		} = req.body;
 
 		if (!items || !Array.isArray(items) || items.length === 0)
 			throw new Error("No items provided");
 
 		let totalAmount = 0;
+		let totalDeliveryFee = 0;
 		let mealItems = [];
 		let cookId = null;
+
+		// Accept both deliveryRegion and selectedRegion for flexibility
+		const region = deliveryRegion || selectedRegion;
+
+		// If delivery type is delivery, we need the selected region
+		if (deliveryType === "delivery" && !region) {
+			throw new Error("Delivery region is required for delivery orders");
+		}
 
 		for (const item of items) {
 			const { mealId, quantity } = item;
@@ -43,36 +60,96 @@ export const createOrder = async (req, res) => {
 			if (cookId.toString() !== meal.cookId.toString())
 				throw new Error("All meals must be from the same cook");
 
-			totalAmount += meal.price * quantity;
+			// Calculate meal subtotal
+			const mealSubtotal = meal.price * quantity;
+			totalAmount += mealSubtotal;
 
-			mealItems.push({ mealId, quantity, price: meal.price });
+			// Calculate delivery fee for this meal (if delivery)
+			if (
+				deliveryType === "delivery" &&
+				meal.deliveryRegions &&
+				meal.deliveryRegions.length > 0
+			) {
+				const regionFee = meal.deliveryRegions.find((r) => r.region === region);
+
+				if (!regionFee) {
+					throw new Error(
+						`Delivery not available for region: ${region}. Available regions: ${meal.deliveryRegions.map((r) => r.region).join(", ")}`,
+					);
+				}
+
+				// For multiple meals from same cook, use the highest delivery fee
+				if (regionFee.fee > totalDeliveryFee) {
+					totalDeliveryFee = regionFee.fee;
+				}
+			}
+
+			mealItems.push({
+				mealId,
+				quantity,
+				price: meal.price,
+			});
+		}
+
+		// Add delivery fee to total amount if delivery
+		const mealSubtotal = totalAmount;
+		if (deliveryType === "delivery") {
+			totalAmount += totalDeliveryFee;
 		}
 
 		const paymentReference =
 			"PAY-" + crypto.randomBytes(6).toString("hex").toUpperCase();
 
-		const order = await Order.create(
-			[
-				{
-					userId: req.user._id,
-					cookId,
-					mealItems,
-					totalAmount,
-					deliveryType,
-					note,
-					paymentType,
-					paymentReference,
-					paymentStatus: "pending", // Explicitly set as pending
-					status: "pending", // Order stays pending until payment
-				},
-			],
-			{ session },
-		);
+		const orderData = {
+			userId: req.user._id,
+			cookId,
+			mealItems,
+			totalAmount,
+			deliveryType,
+			note: note || "",
+			paymentType,
+			paymentReference,
+			paymentStatus: "pending",
+			status: "pending",
+			deliveryFee: totalDeliveryFee,
+		};
+
+		// Add delivery address if provided
+		if (deliveryType === "delivery") {
+			if (deliveryAddress) {
+				orderData.deliveryAddress = deliveryAddress;
+			}
+			// Store the selected region for reference
+			orderData.selectedRegion = region;
+		}
+
+		const order = await Order.create([orderData], { session });
 
 		const createdOrder = order[0];
 
 		await session.commitTransaction();
 		session.endSession();
+
+		// Prepare response order object with all important fields
+		const responseOrder = {
+			_id: createdOrder._id,
+			userId: createdOrder.userId,
+			cookId: createdOrder.cookId,
+			totalAmount: createdOrder.totalAmount,
+			deliveryFee: createdOrder.deliveryFee,
+			mealSubtotal: mealSubtotal,
+			deliveryType: createdOrder.deliveryType,
+			status: createdOrder.status,
+			paymentStatus: createdOrder.paymentStatus,
+			paymentReference: createdOrder.paymentReference, // ✅ Include payment reference
+			note: createdOrder.note,
+			createdAt: createdOrder.createdAt,
+		};
+
+		// Add region to response if delivery
+		if (deliveryType === "delivery") {
+			responseOrder.selectedRegion = region;
+		}
 
 		// Handle Paystack (Self payment)
 		if (paymentType === "self") {
@@ -91,8 +168,10 @@ export const createOrder = async (req, res) => {
 			);
 
 			return res.json({
-				order: createdOrder,
+				success: true,
+				order: responseOrder,
 				paymentUrl: paystack.data.data.authorization_url,
+				paymentReference: paymentReference, // ✅ Also include at root level
 				message: "Complete payment to confirm your order",
 			});
 		}
@@ -108,7 +187,7 @@ export const createOrder = async (req, res) => {
 			const paystackRes = await axios.post(
 				"https://api.paystack.co/transaction/initialize",
 				{
-					email: createdOrder.userEmail || "friend@getameal.com",
+					email: req.user.email,
 					amount: createdOrder.totalAmount * 100,
 					reference: paymentReference,
 					callback_url: `${process.env.API_URL}/orders/payment/redirect?orderId=${createdOrder._id}&reference=${paymentReference}`,
@@ -126,27 +205,31 @@ export const createOrder = async (req, res) => {
 				},
 			);
 
-			// ✅ DON'T send notification here - only after payment is verified
-
 			return res.json({
-				order: createdOrder,
+				success: true,
+				order: responseOrder,
 				paymentLinkCode,
 				deepLink: `getameal://payment-friend/pay/${paymentLinkCode}`,
 				paystackUrl: paystackRes.data.data.authorization_url,
-				reference: paymentReference,
+				paymentReference: paymentReference, // ✅ Include payment reference
 				message: "Share payment link with friend to complete payment",
 			});
 		}
 
 		res.json({
-			order: createdOrder,
+			success: true,
+			order: responseOrder,
+			paymentReference: paymentReference, // ✅ Include payment reference for non-payment orders
 			message: "Order created successfully",
 		});
 	} catch (error) {
 		await session.abortTransaction();
 		session.endSession();
 		console.error("Create order error:", error);
-		res.status(400).json({ message: error.message });
+		res.status(400).json({
+			success: false,
+			message: error.message,
+		});
 	}
 };
 
@@ -193,8 +276,8 @@ export const handlePaymentCallback = async (req, res) => {
 		}
 
 		let order = null;
+		let isNewlyProcessed = false;
 
-		// ✅ 1. Try metadata (BEST PRACTICE)
 		const metaOrderId = paymentData.metadata?.orderId;
 
 		if (metaOrderId) {
@@ -204,7 +287,6 @@ export const handlePaymentCallback = async (req, res) => {
 				.populate("userId");
 		}
 
-		// ✅ 2. Fallback to query param
 		if (!order && orderId) {
 			order = await Order.findById(orderId)
 				.populate("mealItems.mealId")
@@ -212,7 +294,6 @@ export const handlePaymentCallback = async (req, res) => {
 				.populate("userId");
 		}
 
-		// ❌ If still not found
 		if (!order) {
 			console.error("❌ Order lookup failed", {
 				reference,
@@ -222,86 +303,129 @@ export const handlePaymentCallback = async (req, res) => {
 			return res.status(404).json({ message: "Order not found" });
 		}
 
-		// ✅ Prevent double processing (idempotency)
-		if (order.paymentStatus === "paid") {
+		// ✅ Check if order is already paid but missing OTP
+		let needsOtpRegeneration = false;
+
+		if (order.paymentStatus === "paid" && !order.deliveryOtp) {
+			console.log(
+				`⚠️ Order ${order._id} is paid but missing OTP. Regenerating...`,
+			);
+			needsOtpRegeneration = true;
+		}
+
+		// ✅ Prevent double processing (but allow OTP regeneration)
+		if (order.paymentStatus === "paid" && !needsOtpRegeneration) {
+			console.log(`⏭️ Order ${order._id} already processed`);
+
+			// Still return the order with OTP if it exists
+			const orderResponse = order.toObject();
 			return res.status(200).json({
 				message: "Already processed",
-				order,
+				order: orderResponse,
+				deliveryOtp: order.deliveryOtp,
 			});
 		}
 
-		// ✅ Optional: Validate amount (important)
-		const paidAmount = paymentData.amount / 100; // Paystack returns kobo
+		// Generate OTP if needed (new order or missing OTP)
+		let deliveryOtp = order.deliveryOtp;
 
-		if (paidAmount !== order.totalAmount) {
-			console.warn("⚠️ Amount mismatch", {
-				paidAmount,
-				expected: order.totalAmount,
-			});
-			return res.status(400).json({
-				message: "Amount mismatch",
-			});
+		if (needsOtpRegeneration || !order.deliveryOtp) {
+			deliveryOtp = Math.floor(100000 + Math.random() * 900000).toString();
+			console.log(`🔐 Generating OTP ${deliveryOtp} for order ${order._id}`);
+			order.deliveryOtp = deliveryOtp;
+			order.otpGeneratedAt = new Date();
 		}
 
-		// ✅ Update order
-		order.paymentStatus = "paid";
-		order.status = "confirmed"; // Only confirm AFTER payment
-		order.paymentReference = reference;
+		// Update order if it's not already paid
+		if (order.paymentStatus !== "paid") {
+			// ✅ Validate amount
+			const paidAmount = paymentData.amount / 100;
+
+			if (paidAmount !== order.totalAmount) {
+				console.warn("⚠️ Amount mismatch", {
+					paidAmount,
+					expected: order.totalAmount,
+				});
+				return res.status(400).json({
+					message: "Amount mismatch",
+				});
+			}
+
+			order.paymentStatus = "paid";
+			order.status = "confirmed";
+			order.paymentReference = reference;
+			isNewlyProcessed = true;
+		}
 
 		await order.save();
 
-		// ✅ 🆕 SEND NOTIFICATIONS HERE - ONLY AFTER SUCCESSFUL PAYMENT
+		console.log(`✅ Order ${order._id} saved with OTP: ${order.deliveryOtp}`);
 
-		// 1. Send notification to COOK about the new paid order
-		if (order.cookId) {
-			await sendPushToUser(
-				order.cookId._id,
-				"🆕 New Paid Order! 💰",
-				`${order.userId?.fullName || "Customer"} just completed payment of ₦${order.totalAmount.toFixed(2)}. Ready to cook! 🍳`,
-				{
-					type: "new_paid_order",
-					orderId: order._id.toString(),
-					amount: order.totalAmount.toString(),
-				},
-			);
+		// Only send notifications for newly processed orders
+		if (isNewlyProcessed || needsOtpRegeneration) {
+			// 📧 Send OTP to user via email
+			if (order.userId && order.userId.email) {
+				const emailHtml = `
+					<h2>Order Confirmed! 🎉</h2>
+					<p>Your order #${order._id.toString().slice(-6)} has been confirmed.</p>
+					<p><strong>Your Delivery OTP is: ${deliveryOtp}</strong></p>
+					<p>⚠️ Keep this OTP safe. You'll need to share it with the cook/delivery person when you receive your order.</p>
+					<p>This OTP does not expire and is valid until your order is delivered.</p>
+					<small>Order ID: ${order._id}</small>
+				`;
 
-			await createAdminNotification({
-				title: "💰 New Paid Order",
-				body: `Order #${order._id.toString().slice(-6)}: ₦${order.totalAmount.toFixed(2)} payment completed by ${order.userId?.fullName || "Customer"}`,
-				type: "order",
-				data: { orderId: order._id },
-			});
-		}
+				await sendOTPEmail(order.userId.email, deliveryOtp, emailHtml);
+				console.log(`✅ OTP email sent to ${order.userId.email}`);
+			}
 
-		// 2. Send notification to USER about successful payment
-		if (order.userId) {
+			// 📱 Send push notification to user
 			await sendPushToUser(
 				order.userId._id,
-				"✅ Payment Successful! 🎉",
-				`Your payment of ₦${order.totalAmount.toFixed(2)} has been confirmed. The cook will start preparing your order soon!`,
+				"🎫 Your Delivery OTP",
+				`Your delivery OTP for order #${order._id.toString().slice(-6)} is: ${deliveryOtp}. Keep it safe!`,
 				{
-					type: "payment_success",
+					type: "delivery_otp_generated",
 					orderId: order._id.toString(),
-					amount: order.totalAmount.toString(),
+					otp: deliveryOtp,
 				},
 			);
+
+			// Send notification to COOK
+			if (order.cookId) {
+				await sendPushToUser(
+					order.cookId._id,
+					"🆕 New Paid Order! 💰",
+					`${order.userId?.fullName || "Customer"} placed an order for ₦${order.totalAmount.toFixed(2)}. Customer OTP: ${deliveryOtp}`,
+					{
+						type: "new_paid_order",
+						orderId: order._id.toString(),
+						amount: order.totalAmount.toString(),
+						otp: deliveryOtp,
+					},
+				);
+			}
 		}
 
-		// ✅ Emit realtime update (if you use sockets)
-		if (typeof emitOrderUpdate === "function") {
-			emitOrderUpdate(order);
-		}
+		// Fetch updated order
+		const updatedOrder = await Order.findById(order._id)
+			.populate("userId")
+			.populate("cookId")
+			.populate("mealItems.mealId");
 
 		return res.status(200).json({
-			message: "Payment verified successfully",
-			order,
+			message: isNewlyProcessed
+				? "Payment verified successfully"
+				: "Order already processed - OTP regenerated",
+			order: updatedOrder,
+			deliveryOtp: deliveryOtp,
+			otpGeneratedAt: order.otpGeneratedAt,
+			note: `Your delivery OTP is: ${deliveryOtp}. It never expires - keep it safe until you receive your order!`,
 		});
 	} catch (error) {
 		console.error(
 			"❌ Payment verification error:",
 			error?.response?.data || error.message,
 		);
-
 		return res.status(500).json({
 			message: "Payment verification failed",
 			error: error.message,
@@ -552,11 +676,7 @@ export const cancelOrder = async (orderId) => {
 
 // Get orders for logged-in user
 export const getMyOrders = async (req, res) => {
-	console.log("USER OBJECT:", req.user);
-
 	const userId = req.user._id || req.user.id;
-
-	console.log("RESOLVED USER ID:", userId);
 
 	const orders = await Order.find({ userId })
 		.populate({
@@ -570,11 +690,27 @@ export const getMyOrders = async (req, res) => {
 		.sort({ createdAt: -1 });
 
 	// ✅ Add cook profile with kitchen address to each order
-	const ordersWithCookProfile = await Promise.all(
+	const ordersWithDetails = await Promise.all(
 		orders.map(async (order) => {
 			const orderObj = order.toObject();
 
-			// Get cook profile for the cook
+			// 🆕 Include OTP for paid orders that aren't completed yet
+			if (order.paymentStatus === "paid" && order.deliveryOtp) {
+				orderObj.deliveryOtp = order.deliveryOtp;
+				orderObj.otpGeneratedAt = order.otpGeneratedAt;
+
+				if (order.status !== "delivered" && order.status !== "picked_up") {
+					orderObj.otpInstructions =
+						order.deliveryType === "pickup"
+							? "Show this OTP to the cook when picking up your order"
+							: "Share this OTP with your delivery person when they deliver your order";
+					orderObj.otpStatus = "active";
+				} else {
+					orderObj.otpStatus = "used";
+				}
+			}
+
+			// Get cook profile
 			const cookProfile = await CookProfile.findOne({
 				userId: order.cookId._id,
 			}).select(
@@ -583,7 +719,7 @@ export const getMyOrders = async (req, res) => {
 
 			orderObj.cookProfile = cookProfile || null;
 
-			// Also add kitchen address to each meal item
+			// Add kitchen address to each meal item
 			if (orderObj.mealItems && orderObj.mealItems.length > 0) {
 				for (const item of orderObj.mealItems) {
 					if (item.mealId && item.mealId.cookId) {
@@ -597,9 +733,7 @@ export const getMyOrders = async (req, res) => {
 		}),
 	);
 
-	console.log("FOUND ORDERS:", ordersWithCookProfile.length);
-
-	res.json(ordersWithCookProfile);
+	res.json(ordersWithDetails);
 };
 
 // Get single order by ID
@@ -623,10 +757,10 @@ export const getOrderById = async (req, res) => {
 		}
 
 		// Only owner or cook can view
-		if (
-			order.userId._id.toString() !== req.user._id.toString() &&
-			order.cookId._id.toString() !== req.user._id.toString()
-		) {
+		const isOwner = order.userId._id.toString() === req.user._id.toString();
+		const isCook = order.cookId._id.toString() === req.user._id.toString();
+
+		if (!isOwner && !isCook) {
 			return res.status(403).json({
 				message: "Not authorized",
 			});
@@ -634,6 +768,45 @@ export const getOrderById = async (req, res) => {
 
 		// ✅ Add cook profile with kitchen address
 		const orderObj = order.toObject();
+
+		// 🆕 Include OTP for the order owner
+		if (isOwner) {
+			if (order.paymentStatus === "paid" && order.deliveryOtp) {
+				orderObj.deliveryOtp = order.deliveryOtp;
+				orderObj.otpGeneratedAt = order.otpGeneratedAt;
+				orderObj.otpInstructions =
+					order.deliveryType === "pickup"
+						? "⚠️ Show this OTP to the cook when picking up your order"
+						: "⚠️ Share this OTP with your delivery person when they deliver your order";
+
+				// Check if order is already completed
+				if (order.status === "delivered" || order.status === "picked_up") {
+					orderObj.otpStatus = "used";
+					orderObj.otpMessage =
+						"This OTP has already been used to complete the order";
+				} else {
+					orderObj.otpStatus = "active";
+					orderObj.otpMessage =
+						"Keep this OTP safe. Share it only at the time of delivery/pickup";
+				}
+			} else if (order.paymentStatus !== "paid") {
+				orderObj.otpStatus = "pending_payment";
+				orderObj.otpMessage =
+					"OTP will be generated after payment is confirmed";
+			}
+		}
+
+		// For cooks, show OTP info but not the code
+		if (isCook && order.deliveryOtp && order.paymentStatus === "paid") {
+			orderObj.hasOtp = true;
+			orderObj.otpStatus =
+				order.status === "delivered" || order.status === "picked_up"
+					? "used"
+					: "active";
+			orderObj.otpMessage = isCook
+				? "Ask the customer for their OTP to verify delivery"
+				: null;
+		}
 
 		const cookProfile = await CookProfile.findOne({
 			userId: order.cookId._id,
@@ -656,6 +829,7 @@ export const getOrderById = async (req, res) => {
 
 		res.json(orderObj);
 	} catch (error) {
+		console.error("Error in getOrderById:", error);
 		res.status(500).json({
 			message: error.message,
 		});
@@ -759,6 +933,68 @@ export const sendDeliveryOTP = async (req, res) => {
 	}
 };
 
+// Get delivery OTP for user (only the customer)
+export const getDeliveryOTP = async (req, res) => {
+	try {
+		const { orderId } = req.params;
+
+		const order = await Order.findById(orderId);
+
+		if (!order) {
+			return res.status(404).json({ message: "Order not found" });
+		}
+
+		// Only the order owner can view their OTP
+		const isOwner = order.userId.toString() === req.user._id.toString();
+		const isAdmin = req.user.role === "admin";
+
+		if (!isOwner && !isAdmin) {
+			return res
+				.status(403)
+				.json({ message: "Not authorized to view this OTP" });
+		}
+
+		// Check if order is paid
+		if (order.paymentStatus !== "paid") {
+			return res.status(400).json({
+				message:
+					"Order payment not confirmed yet. OTP will be generated after payment.",
+				paymentStatus: order.paymentStatus,
+			});
+		}
+
+		// Check if order is already completed
+		if (order.status === "delivered" || order.status === "picked_up") {
+			return res.status(400).json({
+				message: `Order already ${order.status}. OTP has been used.`,
+				status: order.status,
+			});
+		}
+
+		if (!order.deliveryOtp) {
+			return res.status(404).json({
+				message: "No delivery OTP found. Please contact support.",
+			});
+		}
+
+		res.json({
+			success: true,
+			otp: order.deliveryOtp,
+			generatedAt: order.otpGeneratedAt,
+			deliveryType: order.deliveryType,
+			message: `Your delivery OTP is valid until order is ${order.deliveryType === "pickup" ? "picked up" : "delivered"}`,
+			instructions:
+				order.deliveryType === "pickup"
+					? "Show this OTP to the cook when picking up your order"
+					: "Share this OTP with your delivery person when they deliver your order",
+			orderStatus: order.status,
+		});
+	} catch (error) {
+		console.error("Error getting delivery OTP:", error);
+		res.status(500).json({ message: error.message });
+	}
+};
+
 export const verifyDeliveryOTP = async (req, res) => {
 	try {
 		const { otp } = req.body;
@@ -767,45 +1003,82 @@ export const verifyDeliveryOTP = async (req, res) => {
 			.populate("cookId", "fullName email");
 
 		if (!order) return res.status(404).json({ message: "Order not found" });
-		if (!order.otpCode)
-			return res.status(400).json({ message: "No OTP requested" });
-		if (order.otpExpires < Date.now())
-			return res.status(400).json({ message: "OTP expired" });
-		if (order.otpCode !== otp)
-			return res.status(400).json({ message: "Invalid OTP" });
 
-		// Mark order as completed
+		// ✅ Check if user is authorized to verify OTP (cook or admin)
+		const isCook = order.cookId._id.toString() === req.user._id.toString();
+		const isAdmin = req.user.role === "admin";
+
+		if (!isCook && !isAdmin) {
+			return res.status(403).json({ message: "Not authorized to verify OTP" });
+		}
+
+		// ✅ Check if order has been paid for
+		if (order.paymentStatus !== "paid") {
+			return res.status(400).json({
+				message:
+					"Order payment not completed yet. OTP verification is only available after payment.",
+				paymentStatus: order.paymentStatus,
+			});
+		}
+
+		// ✅ Check if order is already completed
+		if (order.status === "delivered" || order.status === "picked_up") {
+			return res.status(400).json({
+				message: `Order already ${order.status}. OTP has already been used.`,
+				status: order.status,
+			});
+		}
+
+		// ✅ Check if OTP exists - FIXED: use deliveryOtp instead of otpCode
+		if (!order.deliveryOtp) {
+			return res.status(400).json({
+				message: "No OTP generated for this order. Please contact support.",
+				orderStatus: order.status,
+			});
+		}
+
+		// ✅ Verify OTP - FIXED: use deliveryOtp
+		if (order.deliveryOtp !== otp) {
+			return res
+				.status(400)
+				.json({ message: "Invalid OTP. Please check and try again." });
+		}
+
+		// Store the used OTP for logging before clearing
+		const usedOtp = order.deliveryOtp;
+
+		// Mark order as completed based on delivery type
 		if (order.deliveryType === "delivery") {
 			order.status = "delivered";
 		} else if (order.deliveryType === "pickup") {
 			order.status = "picked_up";
 		}
 
-		order.otpCode = null;
-		order.otpExpires = null;
+		// Clear OTP after successful verification (one-time use)
+		order.deliveryOtp = null;
+		order.otpGeneratedAt = null;
 		await order.save();
 
-		// ---- CREDIT COOK WALLET AND DEDUCT COMMISSION ----
+		// Rest of your code remains the same...
 		const cook = await User.findById(order.cookId);
-		const commissionRate = 0.1; // 10% commission
+		const commissionRate = 0.1;
 		const commission = order.totalAmount * commissionRate;
 		const cookAmount = order.totalAmount - commission;
 
 		cook.walletBalance += cookAmount;
 		await cook.save();
 
-		// Log transaction
 		await WalletTransaction.create({
 			cookId: cook._id,
 			type: "credit",
 			amount: cookAmount,
 			reference: order._id.toString(),
+			description: `Payment for order #${order._id.toString().slice(-6)} (OTP: ${usedOtp})`,
 		});
 
-		// ✅ Send push notification to cook
 		await sendPushToUser(
 			cook._id,
-			"Order Completed & Payment Received! 💰",
+			"✅ Order Completed & Payment Received! 💰",
 			`You earned ₦${cookAmount.toFixed(2)} from order #${order._id.toString().slice(-6)}. Commission: ₦${commission.toFixed(2)}`,
 			{
 				type: "order_completed",
@@ -815,31 +1088,48 @@ export const verifyDeliveryOTP = async (req, res) => {
 			},
 		);
 
-		// ✅ Send push notification to user
 		if (order.userId) {
 			await sendPushToUser(
 				order.userId._id,
-				"Order Completed! 🎉",
-				`Your order has been completed. Thank you for choosing GetAMeal!`,
+				"✅ Order Completed! 🎉",
+				`Your order has been ${order.status === "delivered" ? "delivered" : "picked up"}. Thank you for choosing GetAMeal! Enjoy your meal! 🍽️`,
 				{
 					type: "order_completed",
 					orderId: order._id.toString(),
+					status: order.status,
 				},
 			);
 		}
 
-		// Send admin notification
 		await createAdminNotification({
 			title: "Order Completed",
-			body: `Order ${order._id} completed. Cook earned ₦${cookAmount.toFixed(2)}`,
+			body: `Order #${order._id.toString().slice(-6)} completed. Cook earned ₦${cookAmount.toFixed(2)}. OTP ${usedOtp} used for verification.`,
 			type: "order",
-			data: { orderId: order._id, cookAmount },
+			data: {
+				orderId: order._id,
+				cookAmount,
+				commission,
+				usedOtp,
+				verifiedBy: req.user.fullName,
+				verifiedAt: new Date().toISOString(),
+			},
 		});
 
 		res.json({
-			message: "Order completed successfully",
-			order,
+			success: true,
+			message: `Order ${order.status === "delivered" ? "delivered" : "picked up"} successfully!`,
+			order: {
+				_id: order._id,
+				status: order.status,
+				deliveryType: order.deliveryType,
+				totalAmount: order.totalAmount,
+			},
 			cookWalletBalance: cook.walletBalance,
+			verificationDetails: {
+				verifiedBy: req.user.fullName,
+				verifiedAt: new Date().toISOString(),
+				otpUsed: usedOtp,
+			},
 		});
 	} catch (error) {
 		console.error("Error in verifyDeliveryOTP:", error);

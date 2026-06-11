@@ -55,11 +55,30 @@ const orderSchema = new mongoose.Schema(
 		paymentReference: String,
 		friendPaymentCode: String,
 		serviceFee: Number,
-		deliveryFee: Number,
+		deliveryFee: {
+			type: Number,
+			default: 0,
+		},
+
+		selectedRegion: {
+			type: String,
+			enum: ["Mainland", "Island"],
+			default: null,
+		},
+
 		tax: Number,
 		discount: Number,
-		otpCode: String,
-		otpExpires: Date,
+		deliveryOtp: {
+			type: String,
+			sparse: true,
+			index: true,
+		},
+
+		otpGeneratedAt: {
+			type: Date,
+			default: null,
+		},
+
 		refundReference: String,
 	},
 	{ timestamps: true },

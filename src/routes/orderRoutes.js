@@ -5,6 +5,7 @@ import {
 	getActiveOrders,
 	getCompletedOrders,
 	getCookOrderStats,
+	getDeliveryOTP,
 	getMyOrders,
 	getNewOrders,
 	getOrderById,
@@ -34,6 +35,7 @@ router.get("/:id", protect, getOrderById);
 router.put("/:id", protect, updateOrder);
 router.post("/:id/send-otp", protect, sendDeliveryOTP);
 
+router.get("/:id/delivery-otp", protect, getDeliveryOTP);
 router.post("/:id/verify-otp", protect, verifyDeliveryOTP);
 router.patch("/:id/pay", protect, updatePaymentStatus);
 
