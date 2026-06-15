@@ -11,7 +11,7 @@ export const createAdmin = async (req, res) => {
 	try {
 		const { email, password, name } = req.body;
 
-		const existing = await User.findOne({ email });
+		const existing = await User.findOne({ email: email.toLowerCase().trim() });
 
 		if (existing) {
 			return res.status(409).json({ message: "Admin already exists" });
@@ -21,7 +21,7 @@ export const createAdmin = async (req, res) => {
 
 		const admin = await User.create({
 			fullName: name,
-			email,
+			email: email.toLowerCase().trim(),
 			password: hashedPassword,
 			role: "admin",
 			isVerified: true,
@@ -38,13 +38,15 @@ export const createAdmin = async (req, res) => {
 
 export const adminLogin = async (req, res) => {
 	try {
-		const { email, password } = req.body;
+		let { email, password } = req.body;
 
 		if (!email || !password) {
 			return res.status(400).json({
 				message: "Email and password are required",
 			});
 		}
+
+		email = email.toLowerCase().trim();
 
 		const user = await User.findOne({ email }).select("+password");
 
@@ -85,7 +87,9 @@ export const adminLogin = async (req, res) => {
 
 export const adminRequestPasswordReset = async (req, res) => {
 	try {
-		const { email } = req.body;
+		let { email } = req.body;
+
+		email = email.toLowerCase().trim();
 
 		const user = await User.findOne({ email });
 
@@ -113,7 +117,9 @@ export const adminRequestPasswordReset = async (req, res) => {
 
 export const adminResetPassword = async (req, res) => {
 	try {
-		const { email, otp, newPassword } = req.body;
+		let { email, otp, newPassword } = req.body;
+
+		email = email.toLowerCase().trim();
 
 		const record = await OTP.findOne({ email, code: otp });
 
@@ -139,14 +145,17 @@ export const adminResetPassword = async (req, res) => {
 		res.status(500).json({ message: error.message });
 	}
 };
+
 // STEP 1: Signup Init
 export const signupInit = async (req, res) => {
 	try {
-		const { email } = req.body;
+		let { email } = req.body;
 
 		if (!email) {
 			return res.status(400).json({ message: "Email is required" });
 		}
+
+		email = email.toLowerCase().trim();
 
 		const existingUser = await User.findOne({ email });
 
@@ -180,13 +189,15 @@ export const signupInit = async (req, res) => {
 // STEP 2: Verify OTP
 export const signupVerify = async (req, res) => {
 	try {
-		const { email, otp } = req.body;
+		let { email, otp } = req.body;
 
 		if (!email || !otp) {
 			return res.status(400).json({
 				message: "Email and OTP are required",
 			});
 		}
+
+		email = email.toLowerCase().trim();
 
 		const record = await OTP.findOne({ email, code: otp });
 
@@ -219,13 +230,15 @@ export const signupVerify = async (req, res) => {
 
 export const signupComplete = async (req, res) => {
 	try {
-		const { name, email, phone } = req.body;
+		let { name, email, phone } = req.body;
 
 		if (!name || !email) {
 			return res.status(400).json({
 				message: "Name and email are required",
 			});
 		}
+
+		email = email.toLowerCase().trim();
 
 		// Check if user already exists
 		const existingUser = await User.findOne({ email });
@@ -291,7 +304,7 @@ export const signupComplete = async (req, res) => {
 		// Create new user for email signup
 		const user = await User.create({
 			fullName: name,
-			email: email.toLowerCase().trim(),
+			email: email,
 			phone: phone || "",
 			isVerified: true,
 			provider: "email",
@@ -416,10 +429,9 @@ export const loginInit = async (req, res) => {
 };
 
 // STEP 2: Login Verify
-
 export const loginVerify = async (req, res) => {
 	try {
-		const { email, otp } = req.body;
+		let { email, otp } = req.body;
 
 		// Validate input
 		if (!email || !otp) {
@@ -427,6 +439,9 @@ export const loginVerify = async (req, res) => {
 				message: "Email and OTP are required",
 			});
 		}
+
+		// Normalize email to lowercase for case-insensitive comparison
+		email = email.toLowerCase().trim();
 
 		// Find OTP record
 		const record = await OTP.findOne({ email, code: otp });
@@ -629,7 +644,12 @@ export const socialAuth = async (req, res) => {
 		const decoded = await verifyFirebaseToken(idToken);
 		const { uid, email: fbEmail, firebase } = decoded;
 
-		const userEmail = email || fbEmail;
+		let userEmail = email || fbEmail;
+
+		if (userEmail) {
+			userEmail = userEmail.toLowerCase().trim();
+		}
+
 		const provider = firebase?.sign_in_provider || "google.com";
 
 		if (!userEmail) {
@@ -785,7 +805,9 @@ export const socialAuth = async (req, res) => {
 
 		if (error.code === 11000) {
 			try {
-				const existingUser = await User.findOne({ email: req.body.email });
+				const existingUser = await User.findOne({
+					email: req.body.email?.toLowerCase().trim(),
+				});
 				if (existingUser && existingUser.status !== "suspended") {
 					const token = generateToken(existingUser._id);
 					return res.status(200).json({
