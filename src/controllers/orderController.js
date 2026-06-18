@@ -35,6 +35,10 @@ export const createOrder = async (req, res) => {
 		let totalDeliveryFee = 0;
 		let mealItems = [];
 		let cookId = null;
+		let cookName = null;
+
+		// ✅ Track delivery types per cook
+		const cookDeliveryTypes = new Map(); // cookId -> { hasPickupOnly: bool, hasDeliveryOnly: bool, cookName: string }
 
 		// Accept both deliveryRegion and selectedRegion for flexibility
 		const region = deliveryRegion || selectedRegion;
@@ -44,9 +48,121 @@ export const createOrder = async (req, res) => {
 			throw new Error("Delivery region is required for delivery orders");
 		}
 
+		// First pass: Validate all items and check delivery availability per cook
 		for (const item of items) {
 			const { mealId, quantity } = item;
 			if (!mealId || !quantity) throw new Error("Invalid item format");
+
+			// Get meal details (without updating inventory yet)
+			const meal = await Meal.findById(mealId);
+			if (!meal) throw new Error(`Meal not found: ${mealId}`);
+
+			const currentCookId = meal.cookId.toString();
+
+			// Get cook name if not already stored
+			if (!cookDeliveryTypes.has(currentCookId)) {
+				const cook = await User.findById(currentCookId);
+				const cookProfile = await CookProfile.findOne({
+					userId: currentCookId,
+				});
+				const name = cookProfile?.cookDisplayName || cook?.fullName || "Cook";
+
+				cookDeliveryTypes.set(currentCookId, {
+					hasPickupOnly: false,
+					hasDeliveryOnly: false,
+					cookName: name,
+				});
+			}
+
+			const cookData = cookDeliveryTypes.get(currentCookId);
+
+			// Check if meal has delivery regions configured
+			const hasDeliveryRegions =
+				meal.deliveryRegions && meal.deliveryRegions.length > 0;
+
+			// Determine if this meal can be delivered
+			let canBeDelivered = false;
+			if (hasDeliveryRegions && deliveryType === "delivery") {
+				const regionFee = meal.deliveryRegions.find((r) => r.region === region);
+				if (regionFee) {
+					canBeDelivered = true;
+				}
+			}
+
+			// ✅ Track delivery types for this cook
+			if (!hasDeliveryRegions || !canBeDelivered) {
+				// This meal is pickup only (no delivery regions, or delivery not available to selected region)
+				cookData.hasPickupOnly = true;
+			} else {
+				// This meal can be delivered
+				cookData.hasDeliveryOnly = true;
+			}
+
+			// Store cookId for later use
+			if (!cookId) {
+				cookId = meal.cookId;
+				cookName = cookData.cookName;
+			}
+		}
+
+		// ✅ FINAL VALIDATION: Check each cook for mixed delivery types
+		for (const [cookId, data] of cookDeliveryTypes) {
+			if (data.hasPickupOnly && data.hasDeliveryOnly) {
+				throw new Error(
+					`You cannot mix pickup and delivery items from the same cook "${data.cookName}" in one basket.\n` +
+						`Please checkout your current basket first, or remove items to have only one delivery type from this cook.`,
+				);
+			}
+		}
+
+		// Validate delivery type matches items
+		const allItemsDelivery = Array.from(cookDeliveryTypes.values()).every(
+			(d) => d.hasDeliveryOnly,
+		);
+		const allItemsPickup = Array.from(cookDeliveryTypes.values()).every(
+			(d) => d.hasPickupOnly,
+		);
+
+		if (deliveryType === "pickup" && allItemsDelivery) {
+			throw new Error(
+				`All items in your basket are available for delivery only. Please select delivery as your delivery type.`,
+			);
+		}
+
+		if (deliveryType === "delivery" && allItemsPickup) {
+			throw new Error(
+				`All items in your basket are available for pickup only. Please select pickup as your delivery type.`,
+			);
+		}
+
+		// If delivery type is delivery but some items can't be delivered to the selected region
+		if (deliveryType === "delivery") {
+			for (const item of items) {
+				const meal = await Meal.findById(item.mealId);
+				if (meal.deliveryRegions && meal.deliveryRegions.length > 0) {
+					const regionFee = meal.deliveryRegions.find(
+						(r) => r.region === region,
+					);
+					if (!regionFee) {
+						const cookData = cookDeliveryTypes.get(meal.cookId.toString());
+						throw new Error(
+							`Delivery not available for "${meal.name}" from "${cookData?.cookName || "Cook"}" in region: ${region}. ` +
+								`Available regions: ${meal.deliveryRegions.map((r) => r.region).join(", ")}`,
+						);
+					}
+				} else {
+					// Meal has no delivery regions - can't be delivered
+					const cookData = cookDeliveryTypes.get(meal.cookId.toString());
+					throw new Error(
+						`"${meal.name}" from "${cookData?.cookName || "Cook"}" is available for pickup only, but you selected delivery.`,
+					);
+				}
+			}
+		}
+
+		// Second pass: Update inventory and build order
+		for (const item of items) {
+			const { mealId, quantity } = item;
 
 			const meal = await Meal.findOneAndUpdate(
 				{ _id: mealId, portionsRemaining: { $gte: quantity } },
@@ -55,10 +171,6 @@ export const createOrder = async (req, res) => {
 			);
 
 			if (!meal) throw new Error(`Not enough portions for meal ${mealId}`);
-
-			if (!cookId) cookId = meal.cookId;
-			if (cookId.toString() !== meal.cookId.toString())
-				throw new Error("All meals must be from the same cook");
 
 			// Calculate meal subtotal
 			const mealSubtotal = meal.price * quantity;
@@ -71,16 +183,10 @@ export const createOrder = async (req, res) => {
 				meal.deliveryRegions.length > 0
 			) {
 				const regionFee = meal.deliveryRegions.find((r) => r.region === region);
-
-				if (!regionFee) {
-					throw new Error(
-						`Delivery not available for region: ${region}. Available regions: ${meal.deliveryRegions.map((r) => r.region).join(", ")}`,
-					);
-				}
-
-				// For multiple meals from same cook, use the highest delivery fee
-				if (regionFee.fee > totalDeliveryFee) {
-					totalDeliveryFee = regionFee.fee;
+				if (regionFee) {
+					if (regionFee.fee > totalDeliveryFee) {
+						totalDeliveryFee = regionFee.fee;
+					}
 				}
 			}
 
@@ -119,7 +225,6 @@ export const createOrder = async (req, res) => {
 			if (deliveryAddress) {
 				orderData.deliveryAddress = deliveryAddress;
 			}
-			// Store the selected region for reference
 			orderData.selectedRegion = region;
 		}
 
@@ -130,7 +235,7 @@ export const createOrder = async (req, res) => {
 		await session.commitTransaction();
 		session.endSession();
 
-		// Prepare response order object with all important fields
+		// Prepare response
 		const responseOrder = {
 			_id: createdOrder._id,
 			userId: createdOrder.userId,
@@ -146,12 +251,10 @@ export const createOrder = async (req, res) => {
 			createdAt: createdOrder.createdAt,
 		};
 
-		// ✅ Add delivery address to response if it exists
 		if (createdOrder.deliveryAddress) {
 			responseOrder.deliveryAddress = createdOrder.deliveryAddress;
 		}
 
-		// Add region to response if delivery
 		if (deliveryType === "delivery") {
 			responseOrder.selectedRegion = region;
 		}

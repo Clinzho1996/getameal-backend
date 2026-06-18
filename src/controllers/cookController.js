@@ -5,6 +5,8 @@ import dotenv from "dotenv";
 import fs from "fs";
 import mongoose from "mongoose";
 import CookProfile from "../models/CookProfile.js";
+import Meal from "../models/Meal.js";
+import Order from "../models/Order.js";
 import User from "../models/User.js";
 import { createAdminNotification } from "../utils/adminNotification.js";
 
@@ -19,7 +21,17 @@ cloudinary.v2.config({
 
 export const getCookById = async (req, res) => {
 	try {
-		const { cookId } = req.params;
+		// ✅ Check both possible parameter names
+		const cookId = req.params.cookId || req.params.id;
+
+		console.log("Looking for cook with ID:", cookId);
+
+		if (!cookId) {
+			return res.status(400).json({
+				success: false,
+				message: "Cook ID is required",
+			});
+		}
 
 		const cook = await CookProfile.findById(cookId).populate(
 			"userId",
@@ -27,9 +39,15 @@ export const getCookById = async (req, res) => {
 		);
 
 		if (!cook) {
-			return res.status(404).json({ message: "Cook not found" });
+			return res.status(404).json({
+				success: false,
+				message: "Cook not found",
+			});
 		}
 
+		console.log("Found cook:", cook._id);
+
+		// Rest of your code...
 		const meals = await Meal.find({ cookId: cook.userId?._id || cook.userId })
 			.select(
 				"name description price images category status portionsRemaining portionsTotal createdAt cookingDate pickupWindow deliveryRegions quantityLabel unitsPerQuantity",
@@ -59,7 +77,7 @@ export const getCookById = async (req, res) => {
 			{
 				$match: {
 					cookId: cook.userId?._id || cook.userId,
-					paymentStatus: "completed",
+					paymentStatus: "paid", // ✅ Use "paid" instead of "completed"
 				},
 			},
 			{ $group: { _id: null, total: { $sum: "$totalAmount" } } },
@@ -71,7 +89,7 @@ export const getCookById = async (req, res) => {
 			.sort({ createdAt: -1 })
 			.limit(10)
 			.populate("userId", "fullName email phone")
-			.select("orderNumber totalAmount status paymentStatus createdAt");
+			.select("totalAmount status paymentStatus createdAt");
 
 		const cookData = {
 			cookId: cook._id,
@@ -95,6 +113,8 @@ export const getCookById = async (req, res) => {
 			location: cook.location,
 			address: cook.cookAddress,
 			coordinates: cook.location?.coordinates || null,
+			state: cook.location?.state || null,
+			region: cook.location?.region || null,
 
 			// Professional Details
 			experience: cook.cookingExperience,
@@ -102,12 +122,10 @@ export const getCookById = async (req, res) => {
 			schedule: cook.schedule,
 			availableForCooking: cook.availableForCooking,
 
-			// Status Flags - Use cook.isSuspended (directly from CookProfile)
+			// Status Flags
 			isAvailable: cook.isAvailable,
 			isApproved: cook.isApproved,
-			isSuspended: cook.isSuspended || false, // ✅ Fixed: use cook.isSuspended
-			suspensionReason: cook.suspensionReason, // Add if you have this field
-			suspensionNote: cook.suspensionNote, // Add if you have this field
+			isSuspended: cook.isSuspended || false,
 
 			// KYC & Compliance
 			kycInfo: {
@@ -163,8 +181,12 @@ export const getCookById = async (req, res) => {
 			},
 		});
 	} catch (error) {
-		console.error(error);
-		res.status(500).json({ message: "Server error", error: error.message });
+		console.error("Error in getCookById:", error);
+		res.status(500).json({
+			success: false,
+			message: "Server error",
+			error: error.message,
+		});
 	}
 };
 

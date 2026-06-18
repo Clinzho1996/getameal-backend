@@ -259,23 +259,176 @@ export const getMyCart = async (req, res) => {
 	try {
 		const userId = req.user.id;
 
-		const cart = await Cart.findOne({ user: userId }).populate("items.meal");
+		const cart = await Cart.findOne({ user: userId }).populate({
+			path: "items.meal",
+			populate: {
+				path: "cookId",
+				select: "fullName email phone",
+			},
+		});
 
 		if (!cart) {
-			return res.json({ items: [], total: 0 });
+			return res.json({
+				success: true,
+				items: [],
+				total: 0,
+				validation: {
+					hasMixedTypes: false,
+					cooks: [],
+					warnings: [],
+					canCheckout: true,
+				},
+			});
 		}
 
-		// Calculate total securely on server
-		const total = cart.items.reduce(
-			(sum, item) => sum + item.price * item.quantity,
-			0,
-		);
+		let total = 0;
+		const cookDeliveryTypes = new Map();
+
+		// Analyze cart items
+		for (const item of cart.items) {
+			if (!item.meal) continue;
+
+			const meal = item.meal;
+			const cookId = meal.cookId?._id?.toString() || meal.cookId?.toString();
+			if (!cookId) continue;
+
+			total += item.price * item.quantity;
+
+			if (!cookDeliveryTypes.has(cookId)) {
+				const cookName = meal.cookId?.fullName || "Cook";
+				const cookProfile = await CookProfile.findOne({ userId: cookId });
+				const displayName = cookProfile?.cookDisplayName || cookName;
+
+				cookDeliveryTypes.set(cookId, {
+					cookName: displayName,
+					cookId: cookId,
+					hasPickupOnly: false,
+					hasDeliveryOnly: false,
+					items: [],
+				});
+			}
+
+			const cookData = cookDeliveryTypes.get(cookId);
+			const deliveryMode = meal.deliveryMode || "both";
+
+			if (deliveryMode === "pickup_only") {
+				cookData.hasPickupOnly = true;
+			} else if (deliveryMode === "delivery_only") {
+				cookData.hasDeliveryOnly = true;
+			} else {
+				// both
+				cookData.hasPickupOnly = true;
+				if (meal.deliveryRegions && meal.deliveryRegions.length > 0) {
+					cookData.hasDeliveryOnly = true;
+				}
+			}
+
+			cookData.items.push({
+				mealId: meal._id,
+				name: meal.name,
+				quantity: item.quantity,
+				price: item.price,
+				deliveryMode: deliveryMode,
+				deliveryRegions: meal.deliveryRegions || [],
+				image: meal.images?.[0]?.url || null,
+				status: meal.status,
+			});
+		}
+
+		// Generate validation warnings
+		const warnings = [];
+		const cookSummaries = [];
+		let hasMixedTypes = false;
+		let canCheckout = true;
+
+		for (const [cookId, data] of cookDeliveryTypes) {
+			const isMixed = data.hasPickupOnly && data.hasDeliveryOnly;
+
+			if (isMixed) {
+				hasMixedTypes = true;
+				canCheckout = false;
+				warnings.push(
+					`Your cart has both pickup and delivery items from "${data.cookName}". Please remove items to have only one delivery type from this cook.`,
+				);
+			}
+
+			let suggestedDeliveryType = null;
+			if (data.hasPickupOnly && !data.hasDeliveryOnly) {
+				suggestedDeliveryType = "pickup";
+			} else if (!data.hasPickupOnly && data.hasDeliveryOnly) {
+				suggestedDeliveryType = "delivery";
+			}
+
+			cookSummaries.push({
+				cookId: cookId,
+				cookName: data.cookName,
+				hasPickupOnly: data.hasPickupOnly,
+				hasDeliveryOnly: data.hasDeliveryOnly,
+				isMixed: isMixed,
+				suggestedDeliveryType: suggestedDeliveryType,
+				itemCount: data.items.length,
+				items: data.items,
+			});
+		}
+
+		const formattedItems = cart.items
+			.filter((item) => item.meal)
+			.map((item) => {
+				const meal = item.meal;
+				const cookId = meal.cookId?._id?.toString() || meal.cookId?.toString();
+				const cookData = cookDeliveryTypes.get(cookId);
+				const deliveryMode = meal.deliveryMode || "both";
+
+				return {
+					_id: item._id,
+					meal: {
+						_id: meal._id,
+						name: meal.name,
+						price: meal.price,
+						description: meal.description,
+						images: meal.images || [],
+						status: meal.status,
+						deliveryMode: deliveryMode,
+						deliveryRegions: meal.deliveryRegions || [],
+						cookingDate: meal.cookingDate,
+						pickupWindow: meal.pickupWindow,
+						portionsRemaining: meal.portionsRemaining,
+						portionsTotal: meal.portionsTotal,
+					},
+					quantity: item.quantity,
+					price: item.price,
+					subtotal: item.price * item.quantity,
+					cookName: cookData?.cookName || meal.cookId?.fullName || "Cook",
+					deliveryType:
+						deliveryMode === "pickup_only"
+							? "pickup"
+							: deliveryMode === "delivery_only"
+								? "delivery"
+								: "both",
+				};
+			});
 
 		res.json({
-			items: cart.items,
-			total,
+			success: true,
+			items: formattedItems,
+			total: total,
+			itemCount: formattedItems.length,
+			validation: {
+				hasMixedTypes: hasMixedTypes,
+				cooks: cookSummaries,
+				warnings: warnings,
+				canCheckout: canCheckout && formattedItems.length > 0,
+				message: canCheckout
+					? "Your cart is ready for checkout"
+					: "Please fix the issues in your cart before checkout",
+			},
 		});
 	} catch (error) {
-		res.status(500).json({ message: "Failed to fetch cart" });
+		console.error("Get cart error:", error);
+		res.status(500).json({
+			success: false,
+			message: "Failed to fetch cart",
+			error: error.message,
+		});
 	}
 };

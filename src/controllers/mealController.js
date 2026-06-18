@@ -185,7 +185,6 @@ export const updateMeal = async (req, res) => {
 
 		// ===== HANDLE IMAGE REPLACEMENT =====
 		if (req.files && req.files.length > 0) {
-			// 1. Delete old images from Cloudinary
 			if (meal.images && meal.images.length > 0) {
 				for (const img of meal.images) {
 					if (img.publicId) {
@@ -194,7 +193,6 @@ export const updateMeal = async (req, res) => {
 				}
 			}
 
-			// 2. Upload new images
 			let newImages = [];
 			for (const file of req.files) {
 				const result = await cloudinary.v2.uploader.upload(file.path, {
@@ -209,12 +207,89 @@ export const updateMeal = async (req, res) => {
 				fs.unlinkSync(file.path);
 			}
 
-			// 3. Replace images array
 			meal.images = newImages;
 		}
 
 		// ===== UPDATE OTHER FIELDS =====
 		Object.assign(meal, req.body);
+
+		// ===== HANDLE DELIVERY MODE =====
+		if (req.body.deliveryMode) {
+			const validModes = ["pickup_only", "delivery_only", "both"];
+			if (!validModes.includes(req.body.deliveryMode)) {
+				return res.status(400).json({
+					message:
+						"Invalid deliveryMode. Must be 'pickup_only', 'delivery_only', or 'both'",
+				});
+			}
+
+			meal.deliveryMode = req.body.deliveryMode;
+
+			// Update deliveryRegions based on mode
+			switch (req.body.deliveryMode) {
+				case "pickup_only":
+					meal.deliveryRegions = [];
+					break;
+				case "delivery_only":
+					// If no regions exist, set default
+					if (!meal.deliveryRegions || meal.deliveryRegions.length === 0) {
+						meal.deliveryRegions = [
+							{ region: "Mainland", fee: 1500 },
+							{ region: "Island", fee: 200 },
+						];
+					}
+					break;
+				case "both":
+					// If no regions exist, set default
+					if (!meal.deliveryRegions || meal.deliveryRegions.length === 0) {
+						meal.deliveryRegions = [
+							{ region: "Mainland", fee: 1500 },
+							{ region: "Island", fee: 200 },
+						];
+					}
+					break;
+			}
+		}
+
+		// ===== HANDLE DELIVERY REGIONS FROM BODY =====
+		if (req.body.deliveryRegions !== undefined) {
+			if (!req.body.deliveryRegions || req.body.deliveryRegions.length === 0) {
+				meal.deliveryRegions = [];
+				// If regions are cleared, set mode to pickup_only
+				if (meal.deliveryMode !== "pickup_only") {
+					meal.deliveryMode = "pickup_only";
+				}
+			} else {
+				let regions = req.body.deliveryRegions;
+
+				if (typeof regions === "string") {
+					try {
+						regions = JSON.parse(regions);
+					} catch (e) {
+						return res.status(400).json({
+							message: "Invalid deliveryRegions format",
+						});
+					}
+				}
+
+				if (!Array.isArray(regions)) {
+					return res.status(400).json({
+						message: "deliveryRegions must be an array",
+					});
+				}
+
+				for (const region of regions) {
+					if (!region.region || typeof region.fee !== "number") {
+						return res.status(400).json({
+							message:
+								"Each delivery region must have 'region' (string) and 'fee' (number)",
+						});
+					}
+				}
+
+				meal.deliveryRegions = regions;
+			}
+		}
 
 		// ===== PORTION LOGIC =====
 		if (
@@ -226,22 +301,35 @@ export const updateMeal = async (req, res) => {
 
 		await meal.save();
 
-		await createAdminNotification({
-			title: "Meal Updated",
-			body: `The meal "${meal.name}" was updated by ${req.user.fullName}`,
-			type: "meal",
-			data: { mealId: meal._id },
+		// ===== DETERMINE AVAILABILITY =====
+		const hasDeliveryRegions =
+			meal.deliveryRegions && meal.deliveryRegions.length > 0;
+		const deliveryMode = meal.deliveryMode || "both";
+
+		res.json({
+			message: "Meal updated successfully",
+			meal: {
+				_id: meal._id,
+				name: meal.name,
+				description: meal.description,
+				price: meal.price,
+				images: meal.images,
+				status: meal.status,
+				deliveryRegions: meal.deliveryRegions,
+				deliveryMode: deliveryMode,
+				hasDelivery: hasDeliveryRegions,
+				availableFor: deliveryMode,
+				portionsRemaining: meal.portionsRemaining,
+				portionsTotal: meal.portionsTotal,
+				cookingDate: meal.cookingDate,
+				pickupWindow: meal.pickupWindow,
+				quantityLabel: meal.quantityLabel,
+				unitsPerQuantity: meal.unitsPerQuantity,
+				category: meal.category,
+			},
 		});
-
-		await sendPushToUser(
-			req.user._id,
-			"Meal Updated",
-			`The meal "${meal.name}" was updated by ${req.user.fullName}`,
-		);
-
-		res.json({ message: "Meal updated", meal });
 	} catch (error) {
-		console.error(error);
+		console.error("Error updating meal:", error);
 		res.status(500).json({ message: error.message });
 	}
 };

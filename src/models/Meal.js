@@ -22,6 +22,11 @@ const mealSchema = new mongoose.Schema(
 				fee: Number,
 			},
 		],
+		deliveryMode: {
+			type: String,
+			enum: ["pickup_only", "delivery_only", "both"],
+			default: "both",
+		},
 		rating: { type: Number, default: 0 },
 		reviewsCount: { type: Number, default: 0 },
 		ordersCount: { type: Number, default: 0 },
