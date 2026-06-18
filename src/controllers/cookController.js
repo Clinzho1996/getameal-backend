@@ -383,10 +383,13 @@ export const becomeCook = async (req, res) => {
 			address,
 			latitude,
 			longitude,
+			state,
+			region,
 			startImmediately,
 			availableDate,
 			referralCode,
 			bankDetails,
+			experience,
 		} = req.body;
 
 		const userId = req.user.id;
@@ -561,6 +564,59 @@ export const becomeCook = async (req, res) => {
 			});
 		}
 
+		// Determine region based on state or coordinates
+		const determineRegion = (state, lat, lng) => {
+			if (region) return region;
+
+			// If state is provided, map to region
+			if (state) {
+				const stateLower = state.toLowerCase();
+				const mainlandStates = [
+					"lagos mainland",
+					"ikeja",
+					"yaba",
+					"surulere",
+					"mushin",
+					"agege",
+					"alimosho",
+					"egbeda",
+					"akoka",
+					"oshodi",
+				];
+				const islandStates = [
+					"lagos island",
+					"victoria island",
+					"ikoyi",
+					"lekki",
+					"ajah",
+					"epe",
+					"badagry",
+					"sangotedo",
+				];
+
+				if (mainlandStates.some((s) => stateLower.includes(s))) {
+					return "Mainland";
+				} else if (islandStates.some((s) => stateLower.includes(s))) {
+					return "Island";
+				}
+			}
+
+			// If coordinates are provided, use them to determine region
+			if (lat && lng) {
+				// Lagos Mainland approximate coordinates: 6.52°N, 3.37°E
+				// Lagos Island approximate coordinates: 6.45°N, 3.43°E
+				if (parseFloat(lat) > 6.5) {
+					return "Mainland";
+				} else {
+					return "Island";
+				}
+			}
+
+			return "Other";
+		};
+
+		const determinedRegion = determineRegion(state, latitude, longitude);
+
 		// Create cook profile data
 		const cookProfileData = {
 			userId,
@@ -573,7 +629,7 @@ export const becomeCook = async (req, res) => {
 			coverPhoto: coverPhotoUrl,
 			bio: bio || "",
 			cookAddress: address,
-			cookingExperience: req.body.experience || null, // Make sure experience is included
+			cookingExperience: experience || "",
 			availablePickup: true,
 			schedule:
 				startImmediately === "true" || startImmediately === true
@@ -600,14 +656,16 @@ export const becomeCook = async (req, res) => {
 					: parsedKycInfo.businessType || "individual",
 			},
 			kitchenPhotos: kitchenPhotoUrls,
-			location:
-				latitude && longitude
-					? {
-							type: "Point",
-							coordinates: [parseFloat(longitude), parseFloat(latitude)],
-							address: address,
-						}
-					: undefined,
+			location: {
+				type: "Point",
+				coordinates:
+					latitude && longitude
+						? [parseFloat(longitude), parseFloat(latitude)]
+						: [0, 0],
+				address: address || "",
+				state: state || "",
+				region: determinedRegion,
+			},
 			availableForCooking:
 				startImmediately === "true" || startImmediately === true
 					? new Date()
@@ -709,7 +767,7 @@ export const becomeCook = async (req, res) => {
 					status: cookProfile.kycInfo?.isRegistered ? "registered" : "pending",
 				},
 				businessDetails: cookProfile.businessDetails,
-				bankDetails: bankDetailsAdded, // Include bank details if added
+				bankDetails: bankDetailsAdded,
 				kycStatus: cookProfile.kycInfo?.isRegistered ? "registered" : "pending",
 				createdAt: cookProfile.createdAt,
 			},

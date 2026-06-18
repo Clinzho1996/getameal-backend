@@ -13,8 +13,8 @@ const cookSchema = new mongoose.Schema(
 		phone: { type: String, required: true },
 		email: { type: String, required: true },
 		cookDisplayName: { type: String, required: true },
-		profilePhoto: { type: String }, // URL or path
-		coverPhoto: { type: String }, // URL or path
+		profilePhoto: { type: String },
+		coverPhoto: { type: String },
 		bio: { type: String, maxlength: 500 },
 
 		// Payout Details
@@ -31,7 +31,7 @@ const cookSchema = new mongoose.Schema(
 			cac: {
 				isRegistered: { type: Boolean, default: false },
 				registrationNumber: String,
-				certificateImage: String, // URL or path for CAC image
+				certificateImage: String,
 			},
 			cookType: {
 				type: String,
@@ -41,7 +41,7 @@ const cookSchema = new mongoose.Schema(
 
 		// KYC Information
 		kycInfo: {
-			isRegistered: { type: Boolean, required: true }, // Are you registered with KYC?
+			isRegistered: { type: Boolean, required: true },
 			businessType: {
 				type: String,
 				enum: ["individual", "business"],
@@ -49,17 +49,38 @@ const cookSchema = new mongoose.Schema(
 					return !this.kycInfo?.isRegistered;
 				},
 			},
-			cacImage: { type: String }, // CAC image if isRegistered is true
+			cacImage: { type: String },
 		},
 
 		// Kitchen Information
 		cookAddress: String,
+
 		location: {
-			type: { type: String, enum: ["Point"] },
-			coordinates: [Number],
-			address: String,
+			type: {
+				type: String,
+				enum: ["Point"],
+				default: "Point",
+			},
+			coordinates: {
+				type: [Number],
+				default: [0, 0],
+			},
+			address: {
+				type: String,
+				default: "",
+			},
+			state: {
+				type: String,
+				default: "",
+			},
+			region: {
+				type: String,
+				enum: ["Mainland", "Island", "Other"],
+				default: "Other",
+			},
 		},
-		kitchenPhotos: [{ type: String }], // Array of 3 image URLs/paths
+
+		kitchenPhotos: [{ type: String }],
 
 		// Existing fields
 		availableForCooking: Date,
@@ -69,6 +90,7 @@ const cookSchema = new mongoose.Schema(
 		walletBalance: { type: Number, default: 0 },
 		availablePickup: { type: Boolean, default: true },
 		schedule: [String],
+		cookingExperience: { type: String, default: "" },
 		isApproved: { type: Boolean, default: false },
 		isAvailable: { type: Boolean, default: false },
 		isSuspended: { type: Boolean, default: false },

@@ -1,5 +1,5 @@
+// routes/cookRoutes.js
 import express from "express";
-import multer from "multer";
 import {
 	addCookBankAccount,
 	deleteCookBankAccount,
@@ -16,48 +16,44 @@ import {
 	updateCookProfileWithImages,
 } from "../controllers/cookController.js";
 import protect from "../middleware/auth.js";
-
-const upload = multer({ dest: "uploads/" });
+import { uploadMiddleware } from "../middleware/upload.js";
 
 const router = express.Router();
 
-// Become a cook
-router.post(
-	"/become",
-	protect,
-	upload.fields([
-		{ name: "profilePhoto", maxCount: 1 },
-		{ name: "coverPhoto", maxCount: 1 },
-		{ name: "kitchenPhotos", maxCount: 3 },
-		{ name: "cacImage", maxCount: 1 },
-	]),
-	becomeCook,
-);
+// Define the fields for different upload scenarios
+const becomeCookFields = [
+	{ name: "profilePhoto", maxCount: 1 },
+	{ name: "coverPhoto", maxCount: 1 },
+	{ name: "kitchenPhotos", maxCount: 3 },
+	{ name: "cacImage", maxCount: 1 },
+];
 
+const profileUpdateFields = [
+	{ name: "profilePhoto", maxCount: 1 },
+	{ name: "coverPhoto", maxCount: 1 },
+	{ name: "kitchenPhotos", maxCount: 3 },
+];
+
+// Become a cook - using the uploadMiddleware
+router.post("/become", protect, uploadMiddleware(becomeCookFields), becomeCook);
+
+// Update cook profile with images
 router.put(
 	"/profile-with-images",
 	protect,
-	upload.fields([
-		{ name: "profilePhoto", maxCount: 1 },
-		{ name: "coverPhoto", maxCount: 1 },
-		{ name: "kitchenPhotos", maxCount: 3 },
-	]),
+	uploadMiddleware(profileUpdateFields),
 	updateCookProfileWithImages,
 );
+
+// Other routes
 router.get("/kyc-status", protect, getCookKYCStatus);
-router.post("/referral", protect, referCook); // New referral route
+router.post("/referral", protect, referCook);
 router.post("/bank", protect, addCookBankAccount);
 router.get("/bank", protect, getCookBankDetails);
 router.put("/bank", protect, updateCookBankAccount);
 router.delete("/bank", protect, deleteCookBankAccount);
-
-// Update cook profile
 router.patch("/update", protect, updateCookProfile);
-
-// Get single cook
 router.get("/:id", getCookById);
-
-// Get all cooks
 router.get("/", getAllCooks);
 
 export default router;
